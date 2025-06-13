@@ -61,7 +61,11 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // CORS 
 app.use((req, res, next) => {
-    const allowedOrigins = ['http://localhost:3000', 'http://localhost:3001']; 
+    const allowedOrigins = [
+        'http://localhost:3000',
+        'http://localhost:3001',
+        'https://estapaulschool.onrender.com' 
+    ];
     const origin = req.headers.origin;
     
     if (allowedOrigins.includes(origin)) {
