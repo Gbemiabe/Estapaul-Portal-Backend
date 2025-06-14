@@ -654,20 +654,35 @@ app.get('/api/teacher/psychomotor/:studentId/:term/:session', authenticateToken,
 // [12] GET STUDENT RESULTS FOR TEACHER 
 app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateToken, async (req, res) => {
     try {
-        const { studentId, term, session } = req.params;
+        // 🔧 FIX: Decode URL parameters first
+        const studentId = decodeURIComponent(req.params.studentId);
+        const term = decodeURIComponent(req.params.term);
+        const session = decodeURIComponent(req.params.session);
+
+        // Add debugging to see what we're working with
+        console.log('🔍 URL Parameters Debug:', {
+            raw: req.params,
+            decoded: { studentId, term, session }
+        });
 
         // 1. Find student in users table
         const { data: student, error: studentError } = await supabase
             .from('users')
             .select('id, full_name, class, student_id')
-            .eq('student_id', studentId)
-            .eq('role', 'student')  // Ensure we get a student
+            .eq('student_id', studentId) // Now using decoded studentId
+            .eq('role', 'student')
             .single();
 
         if (studentError || !student) {
-            console.error('Student lookup failed:', studentError);
+            console.error('Student lookup failed:', { 
+                studentError, 
+                searchedStudentId: studentId,
+                decodedStudentId: studentId 
+            });
             return res.status(404).json({ message: 'Student not found' });
         }
+
+        console.log('✅ Student found:', student);
 
         // 2. Verify teacher access
         const { data: teacher, error: teacherError } = await supabase
@@ -687,7 +702,9 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
             });
         }
 
-        // Fetch academic results for the requested term
+        console.log('✅ Teacher access verified');
+
+        // Fetch academic results for the requested term (using decoded parameters)
         const { data: academicResults, error: academicError } = await supabase
             .from('academic_results')
             .select(`
@@ -695,25 +712,30 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
                 subjects(name)
             `)
             .eq('student_id', student.id)
-            .eq('term', term)
-            .eq('session', session);
+            .eq('term', term) // Now using decoded term
+            .eq('session', session); // Now using decoded session
 
-        if (academicError) throw academicError;
+        if (academicError) {
+            console.error('Academic results fetch error:', academicError);
+            throw academicError;
+        }
+
+        console.log('✅ Academic results fetched:', academicResults?.length || 0, 'records');
 
         let formattedAcademicResults = [];
         let currentTermOverallTotal = 0;
-        let currentTermOverallObtainable = 0; // Assuming each subject is out of 100
+        let currentTermOverallObtainable = 0;
 
         // Process current term academic results
         if (academicResults && academicResults.length > 0) {
             formattedAcademicResults = academicResults.map(ar => {
-                const total = ar.total_score; // Use directly from DB
+                const total = ar.total_score;
                 const remark = ar.remark;
                 const grade = ar.grade;
                 const avg_pt = (ar.pt1 + ar.pt2 + ar.pt3) / 3;
 
                 currentTermOverallTotal += total;
-                currentTermOverallObtainable += 100; // Assuming each subject is out of 100
+                currentTermOverallObtainable += 100;
 
                 return {
                     id: ar.id,
@@ -737,17 +759,17 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
         let cumulativeOverallTotal = currentTermOverallTotal;
         let cumulativeOverallObtainable = currentTermOverallObtainable;
 
-        let prevTerm1SubjectScores = {}; // Stores {subject_id: total_score}
-        let prevTerm2SubjectScores = {}; // Stores {subject_id: total_score}
+        let prevTerm1SubjectScores = {};
+        let prevTerm2SubjectScores = {};
 
         if (term === '2nd' || term === '3rd') {
-            // Fetch 1st Term results for individual subjects
+            // Fetch 1st Term results for individual subjects (using decoded session)
             const { data: firstTermAcademicResults, error: firstTermAcademicError } = await supabase
                 .from('academic_results')
                 .select('total_score, subject_id')
                 .eq('student_id', student.id)
                 .eq('term', '1st')
-                .eq('session', session);
+                .eq('session', session); // Using decoded session
 
             if (firstTermAcademicError) console.error("Error fetching 1st term academic results:", firstTermAcademicError);
 
@@ -757,18 +779,18 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
                     return sum + res.total_score;
                 }, 0);
                 cumulativeOverallTotal += firstTermOverallTotalScore;
-                cumulativeOverallObtainable += firstTermAcademicResults.length * 100; // Add obtainable score for 1st term subjects
+                cumulativeOverallObtainable += firstTermAcademicResults.length * 100;
             }
         }
 
         if (term === '3rd') {
-            // Fetch 2nd Term results for individual subjects
+            // Fetch 2nd Term results for individual subjects (using decoded session)
             const { data: secondTermAcademicResults, error: secondTermAcademicError } = await supabase
                 .from('academic_results')
                 .select('total_score, subject_id')
                 .eq('student_id', student.id)
                 .eq('term', '2nd')
-                .eq('session', session);
+                .eq('session', session); // Using decoded session
 
             if (secondTermAcademicError) console.error("Error fetching 2nd term academic results:", secondTermAcademicError);
 
@@ -778,26 +800,24 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
                     return sum + res.total_score;
                 }, 0);
                 cumulativeOverallTotal += secondTermOverallTotalScore;
-                cumulativeOverallObtainable += secondTermAcademicResults.length * 100; // Add obtainable score for 2nd term subjects
+                cumulativeOverallObtainable += secondTermAcademicResults.length * 100;
             }
         }
 
-        // Enhance formattedAcademicResults with previous term scores and subject-specific cumulative average
+        // Enhance formattedAcademicResults with previous term scores
         formattedAcademicResults = formattedAcademicResults.map(ar => {
             let enhancedResult = { ...ar };
 
-            // Add 1st term total score for this subject
             if (term === '2nd' || term === '3rd') {
                 enhancedResult.first_term_total_score = prevTerm1SubjectScores[ar.subject_id] !== undefined ? prevTerm1SubjectScores[ar.subject_id] : null;
             } else {
-                enhancedResult.first_term_total_score = null; // Ensure it's null for 1st term
+                enhancedResult.first_term_total_score = null;
             }
 
-            // Add 2nd term total score for this subject
             if (term === '3rd') {
                 enhancedResult.second_term_total_score = prevTerm2SubjectScores[ar.subject_id] !== undefined ? prevTerm2SubjectScores[ar.subject_id] : null;
             } else {
-                enhancedResult.second_term_total_score = null; // Ensure it's null for 1st/2nd term
+                enhancedResult.second_term_total_score = null;
             }
 
             // Calculate subject-specific cumulative average
@@ -815,29 +835,29 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
             return enhancedResult;
         });
 
-        // Fetch psychomotor results
+        // Fetch psychomotor results (using decoded parameters)
         const { data: psychomotorData, error: psychomotorError } = await supabase
             .from('psychomotor_skills')
             .select('*')
             .eq('student_id', student.id)
             .eq('term', term)
             .eq('session', session)
-            .single(); // Assuming one psychomotor entry per student per term/session
+            .single();
 
-        if (psychomotorError && psychomotorError.code !== 'PGRST116') { // PGRST116 is "no rows found"
+        if (psychomotorError && psychomotorError.code !== 'PGRST116') {
             console.error('Error fetching psychomotor skills:', psychomotorError);
         }
 
-        // Fetch attendance
+        // Fetch attendance (using decoded parameters)
         const { data: attendanceData, error: attendanceError } = await supabase
             .from('attendance')
             .select('days_opened, days_present')
             .eq('student_id', student.id)
             .eq('term', term)
             .eq('session', session)
-            .single(); // Assuming one attendance entry per student per term/session
+            .single();
 
-        if (attendanceError && attendanceError.code !== 'PGRST116') { // PGRST116 is "no rows found"
+        if (attendanceError && attendanceError.code !== 'PGRST116') {
             console.error('Error fetching attendance:', attendanceError);
         }
 
@@ -847,10 +867,9 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
             overallCumulativeAvg = ((cumulativeOverallTotal / cumulativeOverallObtainable) * 100).toFixed(2);
         }
 
-        // Calculate overall position (this needs to be done across all students in the class for the term)
-        // This is a complex calculation and typically done after all results are submitted for a term.
-        // For now, we'll leave it as a placeholder or you can implement it based on your specific requirements.
-        let position = 'N/A'; // Placeholder
+        let position = 'N/A';
+
+        console.log('✅ Sending successful response');
 
         res.status(200).json({
             student: student,
@@ -860,21 +879,26 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
             psychomotor: psychomotorData || {},
             attendance: attendanceData || {},
             overallPerformance: {
-                totalScored: currentTermOverallTotal, // Total for current term
-                totalObtainable: currentTermOverallObtainable, // Total for current term
+                totalScored: currentTermOverallTotal,
+                totalObtainable: currentTermOverallObtainable,
                 percentage: currentTermOverallObtainable > 0 ? ((currentTermOverallTotal / currentTermOverallObtainable) * 100).toFixed(2) : '0.00',
                 firstTermTotalScore: term === '2nd' || term === '3rd' ? firstTermOverallTotalScore : null,
                 secondTermTotalScore: term === '3rd' ? secondTermOverallTotalScore : null,
                 cumulativeOverallTotal: cumulativeOverallTotal,
                 cumulativeOverallObtainable: cumulativeOverallObtainable,
                 cumulativeAverage: overallCumulativeAvg,
-                position: position, // This would require cross-student calculation
+                position: position,
             }
         });
 
     } catch (error) {
-        console.error('Endpoint error:', error);
-        res.status(500).json({ message: 'Server error' });
+        console.error('💥 Endpoint error:', error);
+        res.status(500).json({ 
+            message: 'Server error',
+            error: error.message,
+            // Remove stack trace in production
+            stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        });
     }
 });
 
