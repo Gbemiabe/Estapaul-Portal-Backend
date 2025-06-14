@@ -40,7 +40,7 @@ const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret';
 const CLASS_ORDER = [
   'Creche', 'KG 1', 'KG 2', 'Nursery 1', 'Nursery 2', 'Primary 1',
   'Primary 2', 'Primary 3', 'Primary 4', 'Primary 5', 'JSS 1',
-  'JSS 2', 'JSS 3', 'SS1', 'SS2', 'SS3' // Corrected class names (removed space)
+  'JSS 2', 'JSS 3', 'SS1', 'SS2', 'SS3'
 ];
 
 const ALL_CLASSES = [...CLASS_ORDER];
@@ -333,14 +333,15 @@ app.get('/api/school-info', async (req, res) => {
 
         res.json({
             name: 'ESTAPAUL GROUP OF SCHOOLS',
-            motto: 'One with God',
+            motto: 'Readers are Leaders',
             established: 2010,
             address: 'Behind Women Development Center, Igede Ekiti',
-            phone: '+2348104727116',
+            phone: '+2348131819188',
             email: 'info@estapaulschools.com',
             logo_url: logoUrl || 'https://placehold.co/150x50/cccccc/000000?text=Logo+Missing', // Fallback
             description: 'Quality education from Creche to Senior Secondary',
             principal_name: 'Mr Olusegun',
+            proprietor_name: 'Mr Adetunkasi Adewale',
             social_media: {
                 facebook: 'https://facebook.com/estapaulschools',
                 twitter: 'https://twitter.com/estapaulschools',
@@ -707,11 +708,21 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
     const { studentId, term, session } = req.params;
 
     try {
-        // Fetch student details
+        // 1. FIRST verify teacher's class assignment
+        const { data: teacher, error: teacherError } = await supabase
+            .from('users')
+            .select('class')
+            .eq('id', req.user.id)
+            .single();
+
+        if (teacherError) throw teacherError;
+
+        // 2. THEN fetch student from users table
         const { data: student, error: studentError } = await supabase
-            .from('students')
+            .from('users')
             .select('id, full_name, class, student_id')
-            .eq('student_id', studentId)
+            .eq('student_id', studentId)  // Match student_id field
+            .eq('role', 'student')        // Ensure it's a student
             .single();
 
         if (studentError || !student) {
@@ -719,9 +730,11 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
             return res.status(404).json({ message: 'Student not found' });
         }
 
-        // Verify teacher is assigned to the student's class
-        if (req.user.class !== student.class) {
-            return res.status(403).json({ message: 'Access denied: You can only view results for students in your assigned class.' });
+        // 3. Verify class assignment
+        if (teacher.class !== student.class) {
+            return res.status(403).json({ 
+                message: 'Access denied: You can only view results for students in your assigned class.' 
+            });
         }
 
         // Fetch academic results for the requested term
