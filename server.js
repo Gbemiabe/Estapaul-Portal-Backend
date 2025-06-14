@@ -652,6 +652,7 @@ app.get('/api/teacher/psychomotor/:studentId/:term/:session', authenticateToken,
 });
 
 // [12] GET STUDENT RESULTS FOR TEACHER 
+
 app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateToken, async (req, res) => {
     try {
         // 🔧 FIX: Decode URL parameters first
@@ -659,7 +660,6 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
         const term = decodeURIComponent(req.params.term);
         const session = decodeURIComponent(req.params.session);
 
-        // Add debugging to see what we're working with
         console.log('🔍 URL Parameters Debug:', {
             raw: req.params,
             decoded: { studentId, term, session }
@@ -669,15 +669,14 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
         const { data: student, error: studentError } = await supabase
             .from('users')
             .select('id, full_name, class, student_id')
-            .eq('student_id', studentId) // Now using decoded studentId
+            .eq('student_id', studentId)
             .eq('role', 'student')
             .single();
 
         if (studentError || !student) {
             console.error('Student lookup failed:', { 
                 studentError, 
-                searchedStudentId: studentId,
-                decodedStudentId: studentId 
+                searchedStudentId: studentId
             });
             return res.status(404).json({ message: 'Student not found' });
         }
@@ -704,16 +703,15 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
 
         console.log('✅ Teacher access verified');
 
-        // Fetch academic results for the requested term (using decoded parameters)
+        // 🔧 FIX: Changed 'academic_results' to 'results' and simplified the query
         const { data: academicResults, error: academicError } = await supabase
-            .from('academic_results')
+            .from('results') // ← Changed table name
             .select(`
-                id, subject_id, pt1, pt2, pt3, exam, total_score, grade, remark,
-                subjects(name)
-            `)
+                id, subject_id, pt1, pt2, pt3, exam, total_score, grade, remark
+            `) // ← Removed subjects join for now
             .eq('student_id', student.id)
-            .eq('term', term) // Now using decoded term
-            .eq('session', session); // Now using decoded session
+            .eq('term', term)
+            .eq('session', session);
 
         if (academicError) {
             console.error('Academic results fetch error:', academicError);
@@ -721,6 +719,25 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
         }
 
         console.log('✅ Academic results fetched:', academicResults?.length || 0, 'records');
+
+        // Get subject names separately if needed
+        const subjectIds = academicResults ? academicResults.map(ar => ar.subject_id) : [];
+        let subjectNames = {};
+        
+        if (subjectIds.length > 0) {
+            const { data: subjects, error: subjectsError } = await supabase
+                .from('subjects')
+                .select('id, name')
+                .in('id', subjectIds);
+            
+            if (!subjectsError && subjects) {
+                subjects.forEach(subject => {
+                    subjectNames[subject.id] = subject.name;
+                });
+            } else {
+                console.warn('Could not fetch subject names:', subjectsError);
+            }
+        }
 
         let formattedAcademicResults = [];
         let currentTermOverallTotal = 0;
@@ -740,7 +757,7 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
                 return {
                     id: ar.id,
                     subject_id: ar.subject_id,
-                    subject_name: ar.subjects.name,
+                    subject_name: subjectNames[ar.subject_id] || 'Unknown Subject', // ← Using separate lookup
                     pt1: ar.pt1,
                     pt2: ar.pt2,
                     pt3: ar.pt3,
@@ -763,13 +780,13 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
         let prevTerm2SubjectScores = {};
 
         if (term === '2nd' || term === '3rd') {
-            // Fetch 1st Term results for individual subjects (using decoded session)
+            // 🔧 FIX: Changed table name here too
             const { data: firstTermAcademicResults, error: firstTermAcademicError } = await supabase
-                .from('academic_results')
+                .from('results') // ← Changed table name
                 .select('total_score, subject_id')
                 .eq('student_id', student.id)
                 .eq('term', '1st')
-                .eq('session', session); // Using decoded session
+                .eq('session', session);
 
             if (firstTermAcademicError) console.error("Error fetching 1st term academic results:", firstTermAcademicError);
 
@@ -784,13 +801,13 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
         }
 
         if (term === '3rd') {
-            // Fetch 2nd Term results for individual subjects (using decoded session)
+            // 🔧 FIX: Changed table name here too
             const { data: secondTermAcademicResults, error: secondTermAcademicError } = await supabase
-                .from('academic_results')
+                .from('results') // ← Changed table name
                 .select('total_score, subject_id')
                 .eq('student_id', student.id)
                 .eq('term', '2nd')
-                .eq('session', session); // Using decoded session
+                .eq('session', session);
 
             if (secondTermAcademicError) console.error("Error fetching 2nd term academic results:", secondTermAcademicError);
 
@@ -835,7 +852,7 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
             return enhancedResult;
         });
 
-        // Fetch psychomotor results (using decoded parameters)
+        // Fetch psychomotor results
         const { data: psychomotorData, error: psychomotorError } = await supabase
             .from('psychomotor_skills')
             .select('*')
@@ -848,7 +865,7 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
             console.error('Error fetching psychomotor skills:', psychomotorError);
         }
 
-        // Fetch attendance (using decoded parameters)
+        // Fetch attendance
         const { data: attendanceData, error: attendanceError } = await supabase
             .from('attendance')
             .select('days_opened, days_present')
@@ -896,7 +913,6 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
         res.status(500).json({ 
             message: 'Server error',
             error: error.message,
-            // Remove stack trace in production
             stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
         });
     }
