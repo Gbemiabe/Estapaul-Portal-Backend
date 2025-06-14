@@ -702,7 +702,7 @@ app.get('/api/teacher/psychomotor/:studentId/:term/:session', authenticateToken,
     }
 });
 
-// [12] GET STUDENT RESULTS FOR TEACHER - FIXED VERSION
+// [12] GET STUDENT RESULTS FOR TEACHER 
 app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateToken, authorizeTeacher, async (req, res) => {
     const { studentId, term, session } = req.params;
 
@@ -912,6 +912,118 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
     } catch (error) {
         console.error('Error fetching student results:', error);
         res.status(500).json({ message: 'Failed to fetch student results', error: error.message });
+    }
+});
+
+
+// GET CLASS RESULTS AND STUDENT POSITIONS FOR THE AUTHENTICATED TEACHER
+app.get('/api/teacher/class-overall-results', authenticateToken, authorizeTeacher, async (req, res) => {
+    try {
+        // Expecting 'class', 'term', and 'session_id' as query parameters
+        const { class: selectedClass, term, session_id } = req.query; // 'class' is a reserved word, so alias it
+        const teacherId = req.user.id; // Authenticated teacher's ID from the token
+
+        if (!selectedClass || !term || !session_id) {
+            return res.status(400).json({ message: 'Class, Term, and Session ID are required for class results.' });
+        }
+
+        const sessionIdNum = parseInt(session_id, 10);
+        if (isNaN(sessionIdNum)) {
+            return res.status(400).json({ message: 'Session ID must be a valid number.' });
+        }
+
+        // Verify if the requesting teacher is assigned to this class
+        // Fetch the teacher's assigned class from the 'users' table
+        const { data: teacherUser, error: teacherError } = await supabase
+            .from('users')
+            .select('class')
+            .eq('id', teacherId)
+            .eq('role', 'teacher') // Ensure the user is actually a teacher
+            .single();
+
+        if (teacherError || !teacherUser) {
+            console.error('Teacher not found or error fetching teacher class:', teacherError);
+            return res.status(500).json({ message: 'Could not verify teacher details or you are not a teacher.' });
+        }
+
+        if (teacherUser.class !== selectedClass) {
+            return res.status(403).json({ message: 'Access denied: You are not assigned to view results for this class.' });
+        }
+
+        // 1. Fetch all students (users with role 'student') belonging to the specified class
+        const { data: studentsInClass, error: studentsInClassError } = await supabase
+            .from('users') // Correctly use the 'users' table
+            .select('id, full_name, class')
+            .eq('role', 'student') // Filter for students
+            .eq('class', selectedClass); // Filter by the requested class
+
+        if (studentsInClassError) throw studentsInClassError;
+        if (!studentsInClass || studentsInClass.length === 0) {
+            return res.status(404).json({ message: `No students found with the role 'student' for class ${selectedClass}.` });
+        }
+
+        const studentIdsInClass = studentsInClass.map(s => s.id);
+        const studentDetailsMap = new Map(studentsInClass.map(s => [s.id, { full_name: s.full_name, class: s.class }]));
+
+        // 2. Fetch all academic results for these students, for the given term and session ID
+        const { data: academicResults, error: academicResultsError } = await supabase
+            .from('results') // CORRECTED: Use 'results' table based on your CSV
+            .select('student_id, total_score') // Only need student_id and total_score for ranking
+            .in('student_id', studentIdsInClass)
+            .eq('term', term)
+            .eq('session_id', sessionIdNum); // Filter by the provided session_id
+
+        if (academicResultsError) throw academicResultsError;
+
+        // 3. Aggregate total scores for each student in the class for the specific term and session
+        const studentScores = {};
+        studentIdsInClass.forEach(id => {
+            studentScores[id] = {
+                id: id,
+                full_name: studentDetailsMap.get(id)?.full_name || 'Unknown',
+                class: studentDetailsMap.get(id)?.class || 'N/A',
+                term_total_score: 0,
+            };
+        });
+
+        // Sum up total_score for each student
+        academicResults.forEach(result => {
+            if (studentScores[result.student_id]) {
+                studentScores[result.student_id].term_total_score += result.total_score;
+            }
+        });
+
+        // Convert object to array for sorting
+        let classRankings = Object.values(studentScores);
+
+        // 4. Sort students by term_total_score (descending) to determine positions
+        classRankings.sort((a, b) => b.term_total_score - a.term_total_score);
+
+        // 5. Calculate positions (handling ties)
+        let currentRank = 1;
+        let previousScore = -1; // Initialize with a score lower than any possible score
+        classRankings.forEach((student, index) => {
+            if (student.term_total_score !== previousScore) {
+                currentRank = index + 1;
+            }
+            student.position = currentRank;
+            previousScore = student.term_total_score;
+        });
+
+        res.status(200).json({
+            message: 'Class results and positions fetched successfully.',
+            class: selectedClass,
+            term: term,
+            session_id: sessionIdNum,
+            results: classRankings
+        });
+
+    } catch (error) {
+        console.error('Error fetching class overall results and positions:', error);
+        res.status(500).json({
+            message: 'Failed to fetch class overall results and positions',
+            error: error.message
+        });
     }
 });
 
