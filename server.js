@@ -600,59 +600,7 @@ app.post('/api/teacher/results', authenticateToken, async (req, res) => {
     }
 });
 
-// GET single student result for a subject+term+session (for pre-filling upload form)
-app.get('/api/teacher/result/:studentId/:subjectId/:term/:session', authenticateToken, async (req, res) => {
-    try {
-        if (req.user.role !== 'teacher') return res.status(403).json({ message: 'Unauthorized - Teachers only' });
-
-        const { studentId, subjectId, term, session } = req.params;
-
-        const { data: student, error: studentError } = await supabase
-            .from('users')
-            .select('id, class')
-            .eq('student_id', studentId)
-            .single();
-        if (studentError || !student) return res.status(404).json({ message: 'Student not found' });
-
-        const { data: teacher, error: teacherError } = await supabase
-            .from('users')
-            .select('class')
-            .eq('id', req.user.id)
-            .single();
-        if (teacherError || !teacher) return res.status(404).json({ message: 'Teacher not found' });
-        if (teacher.class !== student.class) {
-            return res.status(403).json({ message: 'Unauthorized - You can only view results for your class' });
-        }
-
-        const { data: sessionData, error: sessionError } = await supabase
-            .from('sessions')
-            .select('id')
-            .eq('name', session)
-            .single();
-        if (sessionError || !sessionData) {
-            return res.status(404).json({ message: 'Session not found' });
-        }
-        const sessionId = sessionData.id;
-
-        const { data: result, error: resultError } = await supabase
-            .from('results')
-            .select('pt1, pt2, pt3, exam, avg_pt, total_score, grade, remark')
-            .eq('student_id', student.id)
-            .eq('subject_id', subjectId)
-            .eq('term', term)
-            .eq('session_id', sessionId)
-            .single();
-
-        if (resultError && resultError.code !== 'PGRST116') {
-            throw resultError;
-        }
-
-        res.json({ result: result || null });
-    } catch (error) {
-        res.status(500).json({ message: 'Server error', error: error.message });
-    }
-});
-
+// GET single student result for a subject+term+sessi
 // GET single student psychomotor for a term/session (for pre-filling upload form)
 app.get('/api/teacher/psychomotor/:studentId/:term/:session', authenticateToken, async (req, res) => {
     try {
@@ -708,21 +656,11 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
     const { studentId, term, session } = req.params;
 
     try {
-        // 1. FIRST verify teacher's class assignment
-        const { data: teacher, error: teacherError } = await supabase
-            .from('users')
-            .select('class')
-            .eq('id', req.user.id)
-            .single();
-
-        if (teacherError) throw teacherError;
-
-        // 2. THEN fetch student from users table
+        // Fetch student details
         const { data: student, error: studentError } = await supabase
-            .from('users')
+            .from('students')
             .select('id, full_name, class, student_id')
-            .eq('student_id', studentId)  // Match student_id field
-            .eq('role', 'student')        // Ensure it's a student
+            .eq('student_id', studentId)
             .single();
 
         if (studentError || !student) {
@@ -730,11 +668,9 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
             return res.status(404).json({ message: 'Student not found' });
         }
 
-        // 3. Verify class assignment
-        if (teacher.class !== student.class) {
-            return res.status(403).json({ 
-                message: 'Access denied: You can only view results for students in your assigned class.' 
-            });
+        // Verify teacher is assigned to the student's class
+        if (req.user.class !== student.class) {
+            return res.status(403).json({ message: 'Access denied: You can only view results for students in your assigned class.' });
         }
 
         // Fetch academic results for the requested term
@@ -927,7 +863,6 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
         res.status(500).json({ message: 'Failed to fetch student results', error: error.message });
     }
 });
-
 
 // GET CLASS RESULTS AND STUDENT POSITIONS FOR THE AUTHENTICATED TEACHER
 app.get('/api/teacher/class-overall-results', authenticateToken, authorizeTeacher, async (req, res) => {
