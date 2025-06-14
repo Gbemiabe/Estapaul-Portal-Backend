@@ -652,25 +652,39 @@ app.get('/api/teacher/psychomotor/:studentId/:term/:session', authenticateToken,
 });
 
 // [12] GET STUDENT RESULTS FOR TEACHER 
-app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateToken, authorizeTeacher, async (req, res) => {
-    const { studentId, term, session } = req.params;
-
+app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateToken, async (req, res) => {
     try {
-        // Fetch student details
+        const { studentId, term, session } = req.params;
+
+        // 1. Find student in users table
         const { data: student, error: studentError } = await supabase
-            .from('students')
+            .from('users')
             .select('id, full_name, class, student_id')
             .eq('student_id', studentId)
+            .eq('role', 'student')  // Ensure we get a student
             .single();
 
         if (studentError || !student) {
-            console.error('Student not found:', studentError);
+            console.error('Student lookup failed:', studentError);
             return res.status(404).json({ message: 'Student not found' });
         }
 
-        // Verify teacher is assigned to the student's class
-        if (req.user.class !== student.class) {
-            return res.status(403).json({ message: 'Access denied: You can only view results for students in your assigned class.' });
+        // 2. Verify teacher access
+        const { data: teacher, error: teacherError } = await supabase
+            .from('users')
+            .select('class')
+            .eq('id', req.user.id)
+            .eq('role', 'teacher')
+            .single();
+
+        if (teacherError || !teacher) {
+            return res.status(403).json({ message: 'Teacher not authorized' });
+        }
+
+        if (teacher.class !== student.class) {
+            return res.status(403).json({ 
+                message: 'You can only view results for your own class' 
+            });
         }
 
         // Fetch academic results for the requested term
@@ -859,8 +873,8 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
         });
 
     } catch (error) {
-        console.error('Error fetching student results:', error);
-        res.status(500).json({ message: 'Failed to fetch student results', error: error.message });
+        console.error('Endpoint error:', error);
+        res.status(500).json({ message: 'Server error' });
     }
 });
 
