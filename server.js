@@ -705,10 +705,10 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
 
         // 🔧 FIX: Changed 'academic_results' to 'results' and simplified the query
         const { data: academicResults, error: academicError } = await supabase
-            .from('results') // ← Changed table name
+            .from('results')
             .select(`
                 id, subject_id, pt1, pt2, pt3, exam, total_score, grade, remark
-            `) // ← Removed subjects join for now
+            `)
             .eq('student_id', student.id)
             .eq('term', term)
             .eq('session', session);
@@ -757,7 +757,7 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
                 return {
                     id: ar.id,
                     subject_id: ar.subject_id,
-                    subject_name: subjectNames[ar.subject_id] || 'Unknown Subject', // ← Using separate lookup
+                    subject_name: subjectNames[ar.subject_id] || 'Unknown Subject',
                     pt1: ar.pt1,
                     pt2: ar.pt2,
                     pt3: ar.pt3,
@@ -780,9 +780,8 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
         let prevTerm2SubjectScores = {};
 
         if (term === '2nd' || term === '3rd') {
-            // 🔧 FIX: Changed table name here too
             const { data: firstTermAcademicResults, error: firstTermAcademicError } = await supabase
-                .from('results') // ← Changed table name
+                .from('results')
                 .select('total_score, subject_id')
                 .eq('student_id', student.id)
                 .eq('term', '1st')
@@ -801,9 +800,8 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
         }
 
         if (term === '3rd') {
-            // 🔧 FIX: Changed table name here too
             const { data: secondTermAcademicResults, error: secondTermAcademicError } = await supabase
-                .from('results') // ← Changed table name
+                .from('results')
                 .select('total_score, subject_id')
                 .eq('student_id', student.id)
                 .eq('term', '2nd')
@@ -852,6 +850,85 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
             return enhancedResult;
         });
 
+        // 🆕 NEW: Calculate Position - Fetch all students in the same class and term
+        let position = 'N/A';
+        try {
+            // Get all students in the same class
+            const { data: classStudents, error: classStudentsError } = await supabase
+                .from('users')
+                .select('id, full_name, student_id')
+                .eq('class', student.class)
+                .eq('role', 'student');
+
+            if (classStudentsError) {
+                console.error('Error fetching class students:', classStudentsError);
+            } else if (classStudents && classStudents.length > 0) {
+                console.log(`📊 Calculating position for ${classStudents.length} students in class ${student.class}`);
+
+                // Calculate total scores for all students in the class
+                const studentPerformances = [];
+
+                for (const classStudent of classStudents) {
+                    const { data: studentResults, error: studentResultsError } = await supabase
+                        .from('results')
+                        .select('total_score')
+                        .eq('student_id', classStudent.id)
+                        .eq('term', term)
+                        .eq('session', session);
+
+                    if (!studentResultsError && studentResults && studentResults.length > 0) {
+                        const totalScore = studentResults.reduce((sum, result) => sum + result.total_score, 0);
+                        const totalObtainable = studentResults.length * 100;
+                        const percentage = totalObtainable > 0 ? (totalScore / totalObtainable) * 100 : 0;
+
+                        studentPerformances.push({
+                            student_id: classStudent.id,
+                            student_name: classStudent.full_name,
+                            total_score: totalScore,
+                            total_obtainable: totalObtainable,
+                            percentage: percentage
+                        });
+                    }
+                }
+
+                // Sort by percentage (descending) and then by total score (descending)
+                studentPerformances.sort((a, b) => {
+                    if (b.percentage !== a.percentage) {
+                        return b.percentage - a.percentage;
+                    }
+                    return b.total_score - a.total_score;
+                });
+
+                console.log('📈 Student performances calculated:', studentPerformances.length);
+
+                // Find the current student's position
+                const currentStudentIndex = studentPerformances.findIndex(
+                    perf => perf.student_id === student.id
+                );
+
+                if (currentStudentIndex !== -1) {
+                    // Handle ties by giving the same position to students with the same percentage
+                    let currentPosition = 1;
+                    for (let i = 0; i < studentPerformances.length; i++) {
+                        if (i > 0 && studentPerformances[i].percentage < studentPerformances[i-1].percentage) {
+                            currentPosition = i + 1;
+                        }
+                        if (studentPerformances[i].student_id === student.id) {
+                            position = `${currentPosition}/${studentPerformances.length}`;
+                            break;
+                        }
+                    }
+                    console.log(`🏆 Position calculated: ${position}`);
+                } else {
+                    console.warn('⚠️ Current student not found in performance rankings');
+                    position = 'N/A';
+                }
+            }
+        } catch (positionError) {
+            console.error('💥 Error calculating position:', positionError);
+            position = 'N/A';
+        }
+
         // Fetch psychomotor results
         const { data: psychomotorData, error: psychomotorError } = await supabase
             .from('psychomotor_skills')
@@ -884,9 +961,7 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
             overallCumulativeAvg = ((cumulativeOverallTotal / cumulativeOverallObtainable) * 100).toFixed(2);
         }
 
-        let position = 'N/A';
-
-        console.log('✅ Sending successful response');
+        console.log('✅ Sending successful response with position:', position);
 
         res.status(200).json({
             student: student,
@@ -904,7 +979,7 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
                 cumulativeOverallTotal: cumulativeOverallTotal,
                 cumulativeOverallObtainable: cumulativeOverallObtainable,
                 cumulativeAverage: overallCumulativeAvg,
-                position: position,
+                position: position, // 🆕 Now returns actual calculated position
             }
         });
 
