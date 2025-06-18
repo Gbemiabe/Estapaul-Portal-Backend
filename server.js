@@ -658,11 +658,6 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
         const term = decodeURIComponent(req.params.term);
         const session = decodeURIComponent(req.params.session);
 
-        console.log('🔍 URL Parameters Debug:', {
-            raw: req.params,
-            decoded: { studentId, term, session }
-        });
-
         // 1. Find student in users table
         const { data: student, error: studentError } = await supabase
             .from('users')
@@ -672,14 +667,8 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
             .single();
 
         if (studentError || !student) {
-            console.error('Student lookup failed:', { 
-                studentError, 
-                searchedStudentId: studentId
-            });
             return res.status(404).json({ message: 'Student not found' });
         }
-
-        console.log('✅ Student found:', student);
 
         // 2. Verify teacher access
         const { data: teacher, error: teacherError } = await supabase
@@ -699,8 +688,6 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
             });
         }
 
-        console.log('✅ Teacher access verified');
-
         // 🔧 FIX: Changed 'academic_results' to 'results' and simplified the query
         const { data: academicResults, error: academicError } = await supabase
             .from('results')
@@ -712,11 +699,8 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
             .eq('session', session);
 
         if (academicError) {
-            console.error('Academic results fetch error:', academicError);
             throw academicError;
         }
-
-        console.log('✅ Academic results fetched:', academicResults?.length || 0, 'records');
 
         // Get subject names separately if needed
         const subjectIds = academicResults ? academicResults.map(ar => ar.subject_id) : [];
@@ -732,8 +716,6 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
                 subjects.forEach(subject => {
                     subjectNames[subject.id] = subject.name;
                 });
-            } else {
-                console.warn('Could not fetch subject names:', subjectsError);
             }
         }
 
@@ -744,10 +726,8 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
         // Process current term academic results
         if (academicResults && academicResults.length > 0) {
             formattedAcademicResults = academicResults.map(ar => {
-                const total = ar.total_score;
-                const remark = ar.remark;
-                const grade = ar.grade;
-                const avg_pt = (ar.pt1 + ar.pt2 + ar.pt3) / 3;
+                const total = Number(ar.total_score);
+                const avg_pt = (Number(ar.pt1) + Number(ar.pt2) + Number(ar.pt3)) / 3;
 
                 currentTermOverallTotal += total;
                 currentTermOverallObtainable += 100;
@@ -762,8 +742,8 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
                     avg_pt: avg_pt,
                     exam: ar.exam,
                     total_score: total,
-                    grade: grade,
-                    remark: remark
+                    grade: ar.grade,
+                    remark: ar.remark
                 };
             });
         }
@@ -778,19 +758,17 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
         let prevTerm2SubjectScores = {};
 
         if (term === '2nd' || term === '3rd') {
-            const { data: firstTermAcademicResults, error: firstTermAcademicError } = await supabase
+            const { data: firstTermAcademicResults } = await supabase
                 .from('results')
                 .select('total_score, subject_id')
                 .eq('student_id', student.id)
                 .eq('term', '1st')
                 .eq('session', session);
 
-            if (firstTermAcademicError) console.error("Error fetching 1st term academic results:", firstTermAcademicError);
-
             if (firstTermAcademicResults && firstTermAcademicResults.length > 0) {
                 firstTermOverallTotalScore = firstTermAcademicResults.reduce((sum, res) => {
-                    prevTerm1SubjectScores[res.subject_id] = res.total_score;
-                    return sum + res.total_score;
+                    prevTerm1SubjectScores[res.subject_id] = Number(res.total_score);
+                    return sum + Number(res.total_score);
                 }, 0);
                 cumulativeOverallTotal += firstTermOverallTotalScore;
                 cumulativeOverallObtainable += firstTermAcademicResults.length * 100;
@@ -798,19 +776,17 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
         }
 
         if (term === '3rd') {
-            const { data: secondTermAcademicResults, error: secondTermAcademicError } = await supabase
+            const { data: secondTermAcademicResults } = await supabase
                 .from('results')
                 .select('total_score, subject_id')
                 .eq('student_id', student.id)
                 .eq('term', '2nd')
                 .eq('session', session);
 
-            if (secondTermAcademicError) console.error("Error fetching 2nd term academic results:", secondTermAcademicError);
-
             if (secondTermAcademicResults && secondTermAcademicResults.length > 0) {
                 secondTermOverallTotalScore = secondTermAcademicResults.reduce((sum, res) => {
-                    prevTerm2SubjectScores[res.subject_id] = res.total_score;
-                    return sum + res.total_score;
+                    prevTerm2SubjectScores[res.subject_id] = Number(res.total_score);
+                    return sum + Number(res.total_score);
                 }, 0);
                 cumulativeOverallTotal += secondTermOverallTotalScore;
                 cumulativeOverallObtainable += secondTermAcademicResults.length * 100;
@@ -834,12 +810,12 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
             }
 
             // Calculate subject-specific cumulative average
-            let subjectScoresForCumAvg = [ar.total_score];
+            let subjectScoresForCumAvg = [Number(ar.total_score)];
             if (enhancedResult.first_term_total_score !== null) {
-                subjectScoresForCumAvg.push(enhancedResult.first_term_total_score);
+                subjectScoresForCumAvg.push(Number(enhancedResult.first_term_total_score));
             }
             if (enhancedResult.second_term_total_score !== null) {
-                subjectScoresForCumAvg.push(enhancedResult.second_term_total_score);
+                subjectScoresForCumAvg.push(Number(enhancedResult.second_term_total_score));
             }
             enhancedResult.subject_cum_avg = subjectScoresForCumAvg.length > 0
                 ? (subjectScoresForCumAvg.reduce((a, b) => a + b, 0) / subjectScoresForCumAvg.length).toFixed(2)
@@ -848,34 +824,27 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
             return enhancedResult;
         });
 
-        // 🆕 NEW: Calculate Position - Fetch all students in the same class and term
+        // Calculate Position
         let position = 'N/A';
         try {
-            // Get all students in the same class
-            const { data: classStudents, error: classStudentsError } = await supabase
+            const { data: classStudents } = await supabase
                 .from('users')
                 .select('id, full_name, student_id')
                 .eq('class', student.class)
                 .eq('role', 'student');
 
-            if (classStudentsError) {
-                console.error('Error fetching class students:', classStudentsError);
-            } else if (classStudents && classStudents.length > 0) {
-                console.log(`📊 Calculating position for ${classStudents.length} students in class ${student.class}`);
-
-                // Calculate total scores for all students in the class
+            if (classStudents && classStudents.length > 0) {
                 const studentPerformances = [];
-
                 for (const classStudent of classStudents) {
-                    const { data: studentResults, error: studentResultsError } = await supabase
+                    const { data: studentResults } = await supabase
                         .from('results')
                         .select('total_score')
                         .eq('student_id', classStudent.id)
                         .eq('term', term)
                         .eq('session', session);
 
-                    if (!studentResultsError && studentResults && studentResults.length > 0) {
-                        const totalScore = studentResults.reduce((sum, result) => sum + result.total_score, 0);
+                    if (studentResults && studentResults.length > 0) {
+                        const totalScore = studentResults.reduce((sum, result) => sum + Number(result.total_score), 0);
                         const totalObtainable = studentResults.length * 100;
                         const percentage = totalObtainable > 0 ? (totalScore / totalObtainable) * 100 : 0;
 
@@ -888,24 +857,16 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
                         });
                     }
                 }
-
-                // Sort by percentage (descending) and then by total score (descending)
                 studentPerformances.sort((a, b) => {
                     if (b.percentage !== a.percentage) {
                         return b.percentage - a.percentage;
                     }
                     return b.total_score - a.total_score;
                 });
-
-                console.log('📈 Student performances calculated:', studentPerformances.length);
-
-                // Find the current student's position
                 const currentStudentIndex = studentPerformances.findIndex(
                     perf => perf.student_id === student.id
                 );
-
                 if (currentStudentIndex !== -1) {
-                    // Handle ties by giving the same position to students with the same percentage
                     let currentPosition = 1;
                     for (let i = 0; i < studentPerformances.length; i++) {
                         if (i > 0 && studentPerformances[i].percentage < studentPerformances[i-1].percentage) {
@@ -916,19 +877,14 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
                             break;
                         }
                     }
-                    console.log(`🏆 Position calculated: ${position}`);
-                } else {
-                    console.warn('⚠️ Current student not found in performance rankings');
-                    position = 'N/A';
                 }
             }
         } catch (positionError) {
-            console.error('💥 Error calculating position:', positionError);
             position = 'N/A';
         }
 
         // Fetch psychomotor results
-        const { data: psychomotorData, error: psychomotorError } = await supabase
+        const { data: psychomotorData } = await supabase
             .from('psychomotor_skills')
             .select('*')
             .eq('student_id', student.id)
@@ -936,12 +892,8 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
             .eq('session', session)
             .single();
 
-        if (psychomotorError && psychomotorError.code !== 'PGRST116') {
-            console.error('Error fetching psychomotor skills:', psychomotorError);
-        }
-
         // Fetch attendance
-        const { data: attendanceData, error: attendanceError } = await supabase
+        const { data: attendanceData } = await supabase
             .from('attendance')
             .select('days_opened, days_present')
             .eq('student_id', student.id)
@@ -949,17 +901,11 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
             .eq('session', session)
             .single();
 
-        if (attendanceError && attendanceError.code !== 'PGRST116') {
-            console.error('Error fetching attendance:', attendanceError);
-        }
-
         // Calculate overall cumulative average
         let overallCumulativeAvg = null;
         if (cumulativeOverallObtainable > 0) {
             overallCumulativeAvg = ((cumulativeOverallTotal / cumulativeOverallObtainable) * 100).toFixed(2);
         }
-
-        console.log('✅ Sending successful response with position:', position);
 
         res.status(200).json({
             student: student,
@@ -977,24 +923,22 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
                 cumulativeOverallTotal: cumulativeOverallTotal,
                 cumulativeOverallObtainable: cumulativeOverallObtainable,
                 cumulativeAverage: overallCumulativeAvg,
-                position: position, // 🆕 Now returns actual calculated position
+                position: position,
             }
         });
 
     } catch (error) {
-        console.error('💥 Endpoint error:', error);
         res.status(500).json({ 
             message: 'Server error',
-            error: error.message,
-            stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+            error: error.message
         });
     }
 });
 
+
 // GET CLASS RESULTS AND STUDENT POSITIONS FOR THE AUTHENTICATED TEACHER (WITH PERCENTAGE & CLASS AVERAGE)
 app.get('/api/teacher/class-overall-results', authenticateToken, authorizeTeacher, async (req, res) => {
     try {
-        // Expecting 'class', 'term', and 'session_id' as query parameters
         const { class: selectedClass, term, session_id } = req.query;
         const teacherId = req.user.id;
 
@@ -1063,7 +1007,7 @@ app.get('/api/teacher/class-overall-results', authenticateToken, authorizeTeache
 
         academicResults.forEach(result => {
             if (studentScores[result.student_id]) {
-                studentScores[result.student_id].term_total_score += result.total_score;
+                studentScores[result.student_id].term_total_score += Number(result.total_score);
                 studentScores[result.student_id].subject_count += 1;
             }
         });
@@ -1116,7 +1060,6 @@ app.get('/api/teacher/class-overall-results', authenticateToken, authorizeTeache
         });
 
     } catch (error) {
-        console.error('Error fetching class overall results and positions:', error);
         res.status(500).json({
             message: 'Failed to fetch class overall results and positions',
             error: error.message
@@ -1424,7 +1367,7 @@ app.get('/api/student/results/:term/:session', authenticateToken, async (req, re
         const enhancedAcademicResults = await Promise.all(academicResults.map(async (result) => {
             let firstTermSubjectTotal = null;
             let secondTermSubjectTotal = null;
-            let cumulativeSubjectTotal = result.total_score;
+            let cumulativeSubjectTotal = Number(result.total_score);
             let termsCountForSubjectAvg = 1;
 
             // Fetch 1st Term Subject Total
@@ -1439,7 +1382,7 @@ app.get('/api/student/results/:term/:session', authenticateToken, async (req, re
                     .eq('is_approved', true)
                     .single();
                 if (firstTermRes) {
-                    firstTermSubjectTotal = firstTermRes.total_score;
+                    firstTermSubjectTotal = Number(firstTermRes.total_score);
                     cumulativeSubjectTotal += firstTermSubjectTotal;
                     termsCountForSubjectAvg++;
                 }
@@ -1457,7 +1400,7 @@ app.get('/api/student/results/:term/:session', authenticateToken, async (req, re
                     .eq('is_approved', true)
                     .single();
                 if (secondTermRes) {
-                    secondTermSubjectTotal = secondTermRes.total_score;
+                    secondTermSubjectTotal = Number(secondTermRes.total_score);
                     cumulativeSubjectTotal += secondTermSubjectTotal;
                     termsCountForSubjectAvg++;
                 }
@@ -1477,7 +1420,7 @@ app.get('/api/student/results/:term/:session', authenticateToken, async (req, re
             if (classSubjectScoresError) {
                 console.error(`Error fetching class scores for subject ${result.subject_name}:`, classSubjectScoresError);
             } else if (classSubjectScores && classSubjectScores.length > 0) {
-                const totalScores = classSubjectScores.reduce((sum, s) => sum + s.total_score, 0);
+                const totalScores = classSubjectScores.reduce((sum, s) => sum + Number(s.total_score), 0);
                 subjectClassAverage = (totalScores / classSubjectScores.length).toFixed(2);
             }
 
@@ -1519,7 +1462,7 @@ app.get('/api/student/results/:term/:session', authenticateToken, async (req, re
 
         // 6. Calculate Score Summary for Current Term
         const totalObtainableCurrentTerm = academicResults.length * 100;
-        const totalScoredCurrentTerm = academicResults.reduce((sum, r) => sum + r.total_score, 0);
+        const totalScoredCurrentTerm = academicResults.reduce((sum, r) => sum + Number(r.total_score), 0);
         const percentageCurrentTerm = totalObtainableCurrentTerm > 0 ? (totalScoredCurrentTerm / totalObtainableCurrentTerm) * 100 : 0;
 
         // 7. Calculate Class Average (mean of all student percentages) and Position in Class
@@ -1562,7 +1505,7 @@ app.get('/api/student/results/:term/:session', authenticateToken, async (req, re
 
                     allClassApprovedResults.forEach(res => {
                         if (studentOverallScoresInClass[res.student_id]) {
-                            studentOverallScoresInClass[res.student_id].total_score_sum += res.total_score;
+                            studentOverallScoresInClass[res.student_id].total_score_sum += Number(res.total_score);
                             studentOverallScoresInClass[res.student_id].subject_count++;
                         }
                     });
@@ -1623,7 +1566,7 @@ app.get('/api/student/results/:term/:session', authenticateToken, async (req, re
                 .eq('is_approved', true);
             
             if (firstTermResultsOverall && firstTermResultsOverall.length > 0) {
-                firstTermOverallTotalScore = firstTermResultsOverall.reduce((sum, r) => sum + r.total_score, 0);
+                firstTermOverallTotalScore = firstTermResultsOverall.reduce((sum, r) => sum + Number(r.total_score), 0);
                 const firstTermObtainable = firstTermResultsOverall.length * 100;
                 if (firstTermObtainable > 0) {
                     termsForCumulative.push((firstTermOverallTotalScore / firstTermObtainable) * 100);
@@ -1640,7 +1583,7 @@ app.get('/api/student/results/:term/:session', authenticateToken, async (req, re
                     .eq('is_approved', true);
 
                 if (secondTermResultsOverall && secondTermResultsOverall.length > 0) {
-                    secondTermOverallTotalScore = secondTermResultsOverall.reduce((sum, r) => sum + r.total_score, 0);
+                    secondTermOverallTotalScore = secondTermResultsOverall.reduce((sum, r) => sum + Number(r.total_score), 0);
                     const secondTermObtainable = secondTermResultsOverall.length * 100;
                     if (secondTermObtainable > 0) {
                         termsForCumulative.push((secondTermOverallTotalScore / secondTermObtainable) * 100);
@@ -1718,183 +1661,23 @@ app.get('/api/student/results/:term/:session', authenticateToken, async (req, re
     }
 });
 
-// [7a] GET STUDENT'S NOTIFICATIONS
-app.get('/api/student/notifications', authenticateToken, async (req, res) => {
-    try {
-        // Authorization check - only students can access their own notifications
-        if (req.user.role !== 'student') {
-            return res.status(403).json({ message: 'Unauthorized - Students only' });
-        }
-
-        const studentId = req.user.id;
-
-        const { data: notifications, error } = await supabase
-            .from('notifications')
-            .select('*')
-            .eq('recipient_id', studentId)
-            .order('created_at', { ascending: false }); // Latest notifications first
-
-        if (error) {
-            console.error('Supabase fetch notifications error:', error);
-            throw new Error('Failed to fetch notifications.');
-        }
-
-        res.status(200).json({
-            message: 'Notifications fetched successfully.',
-            notifications: notifications || []
-        });
-
-    } catch (error) {
-        console.error('Get student notifications error:', error);
-        res.status(500).json({
-            message: 'Failed to fetch notifications',
-            error: error.message
-        });
-    }
-});
-
-// [7b] MARK STUDENT NOTIFICATION AS READ
-app.patch('/api/student/notifications/:id/read', authenticateToken, async (req, res) => {
-    try {
-        // Authorization check
-        if (req.user.role !== 'student') {
-            return res.status(403).json({ message: 'Unauthorized - Students only' });
-        }
-
-        const notificationId = req.params.id;
-        const studentId = req.user.id;
-
-        // Ensure the notification belongs to the authenticated student
-        const { data: existingNotification, error: fetchError } = await supabase
-            .from('notifications')
-            .select('id, recipient_id')
-            .eq('id', notificationId)
-            .single();
-
-        if (fetchError || !existingNotification) {
-            return res.status(404).json({ message: 'Notification not found.' });
-        }
-
-        if (existingNotification.recipient_id !== studentId) {
-            return res.status(403).json({ message: 'Unauthorized - You can only mark your own notifications as read.' });
-        }
-
-        const { data, error } = await supabase
-            .from('notifications')
-            .update({ is_read: true })
-            .eq('id', notificationId)
-            .select()
-            .single();
-
-        if (error) {
-            console.error('Supabase mark as read error:', error);
-            throw new Error('Failed to update notification status.');
-        }
-
-        res.status(200).json({
-            message: 'Notification marked as read.',
-            notification: data
-        });
-
-    } catch (error) {
-        console.error('Mark notification as read error:', error);
-        res.status(500).json({
-            message: 'Failed to mark notification as read',
-            error: error.message
-        });
-    }
-});
-
-// [7c] GET STUDENT'S OWN ATTENDANCE
-app.get('/api/student/attendance/:term/:session', authenticateToken, async (req, res) => {
-    try {
-        // Authorization check - only students can access their own attendance
-        if (req.user.role !== 'student') {
-            return res.status(403).json({ message: 'Unauthorized - Students only' });
-        }
-
-        const { term, session } = req.params;
-        const studentId = req.user.id; // The authenticated student's user ID
-
-       // First, fetch the session ID from the session name (like you do in your results endpoint)
-const { data: sessionData, error: sessionError } = await supabase
-    .from('sessions')
-    .select('id')
-    .eq('name', session)
-    .single();
-
-if (sessionError || !sessionData) {
-    // handle error
-}
-const sessionId = sessionData.id;
-
-const { data: attendance, error } = await supabase
-    .from('attendance')
-    .select('days_opened, days_present, created_at')
-    .eq('student_id', studentId)
-    .eq('term', term)
-    .eq('session_id', sessionId) // CORRECT
-    .single();
-        if (error) {
-            // If no record found, it's not necessarily an error, just means no data yet
-            if (error.code === 'PGRST116') { // PGRST116 means 'No rows found'
-                return res.status(200).json({
-                    message: 'No attendance data found for this term and session.',
-                    attendance: null
-                });
-            }
-            console.error('Supabase fetch attendance error:', error);
-            throw new Error('Failed to fetch attendance data.');
-        }
-
-        res.status(200).json({
-            message: 'Attendance data fetched successfully.',
-            attendance: attendance
-        });
-
-    } catch (error) {
-        console.error('Get student attendance error:', error);
-        res.status(500).json({
-            message: 'Failed to fetch attendance data',
-            error: error.message
-        });
-    }
-});
-
 // [7d] EXPORT STUDENT'S RESULT TO PDF
 app.get('/api/student/export-result/:term/:session', authenticateToken, async (req, res) => {
     console.log('--- STUDENT EXPORT RESULT ROUTE HIT ---');
     try {
-        // Authorization check - only students can export their own results
         if (req.user.role !== 'student') {
             return res.status(403).json({ message: 'Unauthorized - Students only' });
         }
 
         const { term, session } = req.params;
-        const studentUserId = req.user.id; // The authenticated student's user ID
-
-        // Define PDF dimensions and styles here, globally within the route handler
-        const pageSize = [595, 842]; // A4 size
+        const studentUserId = req.user.id;
+        const pageSize = [595, 842]; // A4
         const margin = 30;
         const tableHeaderHeight = 20;
         const rowHeight = 15;
-        const psychomotorRowHeight = 15; // Same as rowHeight for consistency
-        const academicColumnWidthsPdf = [
-            60,  // Subject
-            28,  // PT1
-            28,  // PT2
-            28,  // PT3
-            35,  // Avg PT
-            30,  // Exam
-            35,  // Total
-            45,  // 1st Term Total
-            45,  // 2nd Term Total
-            45,  // Cum Avg (Subj)
-            45,  // Class Avg (Subj)
-            28,  // Grade
-            60   // Remark
-        ];
-        const psychomotorColumnWidths = [100, 50]; 
+        const psychomotorRowHeight = 15;
+        const academicColumnWidthsPdf = [60,28,28,28,35,30,35,45,45,45,45,28,60];
+        const psychomotorColumnWidths = [100, 50];
         const attendanceColumnWidths = [150, 80];
 
         // 1. Fetch Student's Profile
@@ -1903,14 +1686,12 @@ app.get('/api/student/export-result/:term/:session', authenticateToken, async (r
             .select('id, student_id, full_name, class, gender, profile_picture')
             .eq('id', studentUserId)
             .single();
-
         if (studentError || !student) {
             console.error('Supabase student profile lookup error:', studentError);
             return res.status(404).json({ message: 'Student profile not found.' });
         }
 
         // 2. Fetch School Information
-        // Use a direct fetch to the school-info endpoint
         const schoolInfoResponse = await _fetchApi(`http://localhost:${PORT}/api/school-info`);
         if (!schoolInfoResponse.ok) {
             throw new Error(`Failed to fetch school information: ${schoolInfoResponse.status} ${schoolInfoResponse.statusText}`);
@@ -1923,7 +1704,6 @@ app.get('/api/student/export-result/:term/:session', authenticateToken, async (r
             .select('id')
             .eq('name', session)
             .single();
-
         if (sessionError || !sessionData) {
             return res.status(404).json({ message: 'Session not found for the given term/session combination.' });
         }
@@ -1939,22 +1719,19 @@ app.get('/api/student/export-result/:term/:session', authenticateToken, async (r
             .eq('student_id', student.id)
             .eq('term', term)
             .eq('session_id', sessionId)
-            .eq('is_approved', true) // Only approved results for the report
+            .eq('is_approved', true)
             .order('subjects(name)', { ascending: true });
-
         if (resultsError) {
             console.error('Supabase academic results lookup error:', resultsError);
             throw new Error('Failed to fetch academic results for export.');
         }
 
-        // Prepare enhanced academic results with previous term scores and subject-level class averages for PDF
         const enhancedAcademicResultsForPdf = await Promise.all(academicResults.map(async (result) => {
             let firstTermSubjectTotal = null;
             let secondTermSubjectTotal = null;
-            let cumulativeSubjectTotal = result.total_score; // Start with current term's total
+            let cumulativeSubjectTotal = Number(result.total_score);
             let termsCountForSubjectAvg = 1;
 
-            // Fetch 1st Term Subject Total
             if (term !== '1st') {
                 const { data: firstTermRes } = await supabase
                     .from('results')
@@ -1966,13 +1743,11 @@ app.get('/api/student/export-result/:term/:session', authenticateToken, async (r
                     .eq('is_approved', true)
                     .single();
                 if (firstTermRes) {
-                    firstTermSubjectTotal = firstTermRes.total_score;
+                    firstTermSubjectTotal = Number(firstTermRes.total_score);
                     cumulativeSubjectTotal += firstTermSubjectTotal;
                     termsCountForSubjectAvg++;
                 }
             }
-
-            // Fetch 2nd Term Subject Total (if current term is 3rd)
             if (term === '3rd') {
                 const { data: secondTermRes } = await supabase
                     .from('results')
@@ -1984,13 +1759,11 @@ app.get('/api/student/export-result/:term/:session', authenticateToken, async (r
                     .eq('is_approved', true)
                     .single();
                 if (secondTermRes) {
-                    secondTermSubjectTotal = secondTermRes.total_score;
+                    secondTermSubjectTotal = Number(secondTermRes.total_score);
                     cumulativeSubjectTotal += secondTermSubjectTotal;
                     termsCountForSubjectAvg++;
                 }
             }
-            
-            // Calculate Subject-level Class Average for current term
             let subjectClassAverage = 'N/A';
             const { data: classSubjectScores, error: classSubjectScoresError } = await supabase
                 .from('results')
@@ -1999,12 +1772,11 @@ app.get('/api/student/export-result/:term/:session', authenticateToken, async (r
                 .eq('term', term)
                 .eq('session_id', sessionId)
                 .eq('is_approved', true)
-                .eq('students.class', student.class); // Filter by the student's class
-
+                .eq('students.class', student.class);
             if (classSubjectScoresError) {
                 console.error(`Error fetching class scores for subject ${result.subjects.name}:`, classSubjectScoresError);
             } else if (classSubjectScores && classSubjectScores.length > 0) {
-                const totalScores = classSubjectScores.reduce((sum, s) => sum + s.total_score, 0);
+                const totalScores = classSubjectScores.reduce((sum, s) => sum + Number(s.total_score), 0);
                 subjectClassAverage = (totalScores / classSubjectScores.length).toFixed(2);
             }
 
@@ -2013,11 +1785,10 @@ app.get('/api/student/export-result/:term/:session', authenticateToken, async (r
                 subject_name: result.subjects.name,
                 first_term_subject_total: firstTermSubjectTotal,
                 second_term_subject_total: secondTermSubjectTotal,
-                cumulative_subject_average: termsCountForSubjectAvg > 0 ? (cumulativeSubjectTotal / termsCountForSubjectAvg).toFixed(2) : 'N/A', 
+                cumulative_subject_average: termsCountForSubjectAvg > 0 ? (cumulativeSubjectTotal / termsCountForSubjectAvg).toFixed(2) : 'N/A',
                 subject_class_average: subjectClassAverage,
             };
         }));
-
 
         // 5. Fetch Psychomotor Skills
         const { data: psychomotorSkills, error: psychomotorError } = await supabase
@@ -2031,24 +1802,23 @@ app.get('/api/student/export-result/:term/:session', authenticateToken, async (r
             console.warn('Warning: Psychomotor skills not found for student for export:', psychomotorError.message);
         }
 
-        // 6. Fetch Attendance Data - IMPORTANT: Use session_id here
+        // 6. Fetch Attendance Data
         const { data: attendanceData, error: attendanceError } = await supabase
             .from('attendance')
             .select('days_opened, days_present')
             .eq('student_id', student.id)
             .eq('term', term)
-            .eq('session_id', sessionId) // Corrected to use session_id
+            .eq('session_id', sessionId)
             .single();
         if (attendanceError && attendanceError.code !== 'PGRST116') { 
             console.warn('Warning: Attendance data not found for student for export:', attendanceError.message);
         }
 
-        // Calculate Overall Performance for Current Term
+        // 7. Calculate Scores, Percentage, Class Average, and Position
         const totalObtainableCurrentTerm = academicResults.length * 100;
-        const totalScoredCurrentTerm = academicResults.reduce((sum, r) => sum + r.total_score, 0);
+        const totalScoredCurrentTerm = academicResults.reduce((sum, r) => sum + Number(r.total_score), 0);
         const percentageCurrentTerm = totalObtainableCurrentTerm > 0 ? (totalScoredCurrentTerm / totalObtainableCurrentTerm) * 100 : 0;
 
-        // Calculate Class Average (mean of all student percentages) and Position in Class
         let classAverageOverall = 'N/A';
         let positionInClass = 'N/A';
 
@@ -2059,7 +1829,6 @@ app.get('/api/student/export-result/:term/:session', authenticateToken, async (r
                 .eq('term', term)
                 .eq('session_id', sessionId)
                 .eq('is_approved', true);
-            
             if (allClassApprovedResultsError) {
                 console.error('Error fetching all class approved results for overall average/position:', allClassApprovedResultsError);
             } else if (allClassApprovedResults && allClassApprovedResults.length > 0) {
@@ -2069,7 +1838,6 @@ app.get('/api/student/export-result/:term/:session', authenticateToken, async (r
                     .eq('class', student.class)
                     .eq('role', 'student')
                     .eq('is_active', true);
-
                 if (studentsInClassError) {
                     console.error('Error fetching students in class for position:', studentsInClassError);
                 } else if (studentsInClass && studentsInClass.length > 0) {
@@ -2082,26 +1850,20 @@ app.get('/api/student/export-result/:term/:session', authenticateToken, async (r
                             subject_count: 0
                         };
                     });
-
                     allClassApprovedResults.forEach(res => {
                         if (studentOverallScoresInClass[res.student_id]) {
-                            studentOverallScoresInClass[res.student_id].total_score_sum += res.total_score;
+                            studentOverallScoresInClass[res.student_id].total_score_sum += Number(res.total_score);
                             studentOverallScoresInClass[res.student_id].subject_count++;
                         }
                     });
-
                     const studentsWithValidScores = Object.values(studentOverallScoresInClass).filter(s => s.subject_count > 0);
-                    
-                    // --- CORRECTED CLASS AVERAGE AND POSITION LOGIC ---
                     if (studentsWithValidScores.length > 0) {
-                        // Compute each student's percentage
                         const studentPercentages = studentsWithValidScores.map(s => {
                             const obtainable = s.subject_count * 100;
                             return obtainable > 0 ? (s.total_score_sum / obtainable) * 100 : 0;
                         });
                         classAverageOverall = (studentPercentages.reduce((sum, p) => sum + p, 0) / studentPercentages.length).toFixed(2);
 
-                        // Position in class by percentage
                         const sortedStudents = studentsWithValidScores
                             .map(s => ({
                                 ...s,
@@ -2126,17 +1888,15 @@ app.get('/api/student/export-result/:term/:session', authenticateToken, async (r
             }
         }
 
-        // Cumulative Averages (Overall) and Previous Term Total Scores (Overall SUM of approved results)
+        // 8. Cumulative Averages and Previous Term Total Scores (Overall SUM of approved results)
         let firstTermOverallTotalScore = null;
         let secondTermOverallTotalScore = null;
-        let cumulativeAveragePercentage = null; // Avg of term overall percentages
-
+        let cumulativeAveragePercentage = null;
         const termsForCumulative = [];
         const currentTermPercentageValue = parseFloat(percentageCurrentTerm.toFixed(2));
         if (!isNaN(currentTermPercentageValue) && currentTermPercentageValue > 0) {
             termsForCumulative.push(currentTermPercentageValue);
         }
-
         if (term !== '1st') {
             const { data: firstTermResultsOverall } = await supabase
                 .from('results')
@@ -2145,15 +1905,13 @@ app.get('/api/student/export-result/:term/:session', authenticateToken, async (r
                 .eq('term', '1st')
                 .eq('session_id', sessionId)
                 .eq('is_approved', true);
-            
             if (firstTermResultsOverall && firstTermResultsOverall.length > 0) {
-                firstTermOverallTotalScore = firstTermResultsOverall.reduce((sum, r) => sum + r.total_score, 0);
+                firstTermOverallTotalScore = firstTermResultsOverall.reduce((sum, r) => sum + Number(r.total_score), 0);
                 const firstTermObtainable = firstTermResultsOverall.length * 100;
                 if (firstTermObtainable > 0) {
                     termsForCumulative.push((firstTermOverallTotalScore / firstTermObtainable) * 100);
                 }
             }
-
             if (term === '3rd') {
                 const { data: secondTermResultsOverall } = await supabase
                     .from('results')
@@ -2162,9 +1920,8 @@ app.get('/api/student/export-result/:term/:session', authenticateToken, async (r
                     .eq('term', '2nd')
                     .eq('session_id', sessionId)
                     .eq('is_approved', true);
-
                 if (secondTermResultsOverall && secondTermResultsOverall.length > 0) {
-                    secondTermOverallTotalScore = secondTermResultsOverall.reduce((sum, r) => sum + r.total_score, 0);
+                    secondTermOverallTotalScore = secondTermResultsOverall.reduce((sum, r) => sum + Number(r.total_score), 0);
                     const secondTermObtainable = secondTermResultsOverall.length * 100;
                     if (secondTermObtainable > 0) {
                         termsForCumulative.push((secondTermOverallTotalScore / secondTermObtainable) * 100);
@@ -2172,12 +1929,11 @@ app.get('/api/student/export-result/:term/:session', authenticateToken, async (r
                 }
             }
         }
-        
         if (termsForCumulative.length > 0) {
             cumulativeAveragePercentage = (termsForCumulative.reduce((sum, p) => sum + p, 0) / termsForCumulative.length).toFixed(2);
         }
 
-        // Determine Teacher Comment and Head Teacher Comment (using percentageCurrentTerm)
+        // 9. Determine Teacher Comment and Head Teacher Comment
         let teacherComment = '';
         if (percentageCurrentTerm >= 70) teacherComment = 'Brilliant student with good potentials, never relent';
         else if (percentageCurrentTerm >= 60) teacherComment = 'This is not yet your limit, you can do more';
@@ -2185,7 +1941,6 @@ app.get('/api/student/export-result/:term/:session', authenticateToken, async (r
         else if (percentageCurrentTerm >= 40) teacherComment = 'Try harder, you have the potentials';
         else if (percentageCurrentTerm >= 30) teacherComment = 'Needs urgent attention and improvement';
         else teacherComment = 'Very poor performance, immediate intervention needed';
-
         let headTeacherComment = '';
         if (percentageCurrentTerm >= 80) headTeacherComment = 'Outstanding performance! Keep soaring higher. - Mr Olusegun';
         else if (percentageCurrentTerm >= 70) headTeacherComment = 'Excellent result. Maintain this standard. - Mr Olusegun';
@@ -2193,7 +1948,6 @@ app.get('/api/student/export-result/:term/:session', authenticateToken, async (r
         else if (percentageCurrentTerm >= 50) headTeacherComment = 'Satisfactory result. More effort required. - Mr Olusegun';
         else if (percentageCurrentTerm >= 40) headTeacherComment = 'Fair performance. Significant improvement needed. - Mr Olusegun';
         else headTeacherComment = 'Unsatisfactory performance. Immediate remediation required. - Mr Olusegun';
-
 
         // --- PDF Generation Logic ---
         const pdfDoc = await PDFDocument.create();
