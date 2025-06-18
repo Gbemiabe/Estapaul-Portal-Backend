@@ -600,8 +600,6 @@ app.post('/api/teacher/results', authenticateToken, async (req, res) => {
     }
 });
 
-// GET single student result for a subject+term+sessi
-// GET single student psychomotor for a term/session (for pre-filling upload form)
 app.get('/api/teacher/psychomotor/:studentId/:term/:session', authenticateToken, async (req, res) => {
     try {
         if (req.user.role !== 'teacher') return res.status(403).json({ message: 'Unauthorized - Teachers only' });
@@ -993,12 +991,12 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
     }
 });
 
-// GET CLASS RESULTS AND STUDENT POSITIONS FOR THE AUTHENTICATED TEACHER
+// GET CLASS RESULTS AND STUDENT POSITIONS FOR THE AUTHENTICATED TEACHER (WITH PERCENTAGE & CLASS AVERAGE)
 app.get('/api/teacher/class-overall-results', authenticateToken, authorizeTeacher, async (req, res) => {
     try {
         // Expecting 'class', 'term', and 'session_id' as query parameters
-        const { class: selectedClass, term, session_id } = req.query; // 'class' is a reserved word, so alias it
-        const teacherId = req.user.id; // Authenticated teacher's ID from the token
+        const { class: selectedClass, term, session_id } = req.query;
+        const teacherId = req.user.id;
 
         if (!selectedClass || !term || !session_id) {
             return res.status(400).json({ message: 'Class, Term, and Session ID are required for class results.' });
@@ -1010,16 +1008,14 @@ app.get('/api/teacher/class-overall-results', authenticateToken, authorizeTeache
         }
 
         // Verify if the requesting teacher is assigned to this class
-        // Fetch the teacher's assigned class from the 'users' table
         const { data: teacherUser, error: teacherError } = await supabase
             .from('users')
             .select('class')
             .eq('id', teacherId)
-            .eq('role', 'teacher') // Ensure the user is actually a teacher
+            .eq('role', 'teacher')
             .single();
 
         if (teacherError || !teacherUser) {
-            console.error('Teacher not found or error fetching teacher class:', teacherError);
             return res.status(500).json({ message: 'Could not verify teacher details or you are not a teacher.' });
         }
 
@@ -1027,16 +1023,16 @@ app.get('/api/teacher/class-overall-results', authenticateToken, authorizeTeache
             return res.status(403).json({ message: 'Access denied: You are not assigned to view results for this class.' });
         }
 
-        // 1. Fetch all students (users with role 'student') belonging to the specified class
+        // 1. Fetch all students in the specified class
         const { data: studentsInClass, error: studentsInClassError } = await supabase
-            .from('users') // Correctly use the 'users' table
+            .from('users')
             .select('id, full_name, class')
-            .eq('role', 'student') // Filter for students
-            .eq('class', selectedClass); // Filter by the requested class
+            .eq('role', 'student')
+            .eq('class', selectedClass);
 
         if (studentsInClassError) throw studentsInClassError;
         if (!studentsInClass || studentsInClass.length === 0) {
-            return res.status(404).json({ message: `No students found with the role 'student' for class ${selectedClass}.` });
+            return res.status(404).json({ message: `No students found for class ${selectedClass}.` });
         }
 
         const studentIdsInClass = studentsInClass.map(s => s.id);
@@ -1044,15 +1040,15 @@ app.get('/api/teacher/class-overall-results', authenticateToken, authorizeTeache
 
         // 2. Fetch all academic results for these students, for the given term and session ID
         const { data: academicResults, error: academicResultsError } = await supabase
-            .from('results') // CORRECTED: Use 'results' table based on your CSV
-            .select('student_id, total_score') // Only need student_id and total_score for ranking
+            .from('results')
+            .select('student_id, total_score')
             .in('student_id', studentIdsInClass)
             .eq('term', term)
-            .eq('session_id', sessionIdNum); // Filter by the provided session_id
+            .eq('session_id', sessionIdNum);
 
         if (academicResultsError) throw academicResultsError;
 
-        // 3. Aggregate total scores for each student in the class for the specific term and session
+        // 3. Aggregate total scores and percentages per student
         const studentScores = {};
         studentIdsInClass.forEach(id => {
             studentScores[id] = {
@@ -1060,38 +1056,62 @@ app.get('/api/teacher/class-overall-results', authenticateToken, authorizeTeache
                 full_name: studentDetailsMap.get(id)?.full_name || 'Unknown',
                 class: studentDetailsMap.get(id)?.class || 'N/A',
                 term_total_score: 0,
+                subject_count: 0,
+                percentage: 0
             };
         });
 
-        // Sum up total_score for each student
         academicResults.forEach(result => {
             if (studentScores[result.student_id]) {
                 studentScores[result.student_id].term_total_score += result.total_score;
+                studentScores[result.student_id].subject_count += 1;
+            }
+        });
+
+        // Calculate percentage for each student
+        Object.values(studentScores).forEach(student => {
+            if (student.subject_count > 0) {
+                student.percentage = (student.term_total_score / (student.subject_count * 100)) * 100;
+            } else {
+                student.percentage = 0;
             }
         });
 
         // Convert object to array for sorting
         let classRankings = Object.values(studentScores);
 
-        // 4. Sort students by term_total_score (descending) to determine positions
-        classRankings.sort((a, b) => b.term_total_score - a.term_total_score);
+        // 4. Sort students by percentage (descending)
+        classRankings.sort((a, b) => b.percentage - a.percentage);
 
         // 5. Calculate positions (handling ties)
         let currentRank = 1;
-        let previousScore = -1; // Initialize with a score lower than any possible score
+        let previousPercentage = null;
         classRankings.forEach((student, index) => {
-            if (student.term_total_score !== previousScore) {
+            if (previousPercentage === null || student.percentage !== previousPercentage) {
                 currentRank = index + 1;
             }
             student.position = currentRank;
-            previousScore = student.term_total_score;
+            previousPercentage = student.percentage;
         });
+
+        // 6. Calculate class average (mean of percentages)
+        const percentages = classRankings.map(s => s.percentage);
+        const classAverage = percentages.length > 0
+            ? (percentages.reduce((sum, p) => sum + p, 0) / percentages.length).toFixed(2)
+            : 'N/A';
+
+        // Format student percentages to 2 decimal places for return
+        classRankings = classRankings.map(s => ({
+            ...s,
+            percentage: s.subject_count > 0 ? s.percentage.toFixed(2) : '0.00'
+        }));
 
         res.status(200).json({
             message: 'Class results and positions fetched successfully.',
             class: selectedClass,
             term: term,
             session_id: sessionIdNum,
+            classAverage,
             results: classRankings
         });
 
@@ -1346,7 +1366,7 @@ app.get('/api/student/me', authenticateToken, async (req, res) => {
     }
 });
 
-// [7] GET STUDENT'S OWN ACADEMIC AND PSYCHOMOTOR RESULTS (Enhanced for full report card)
+// [7] GET STUDENT'S OWN ACADEMIC AND PSYCHOMOTOR RESULTS (Enhanced, with correct class average logic)
 app.get('/api/student/results/:term/:session', authenticateToken, async (req, res) => {
     try {
         // Authorization check - only students can access their own results
@@ -1355,9 +1375,9 @@ app.get('/api/student/results/:term/:session', authenticateToken, async (req, re
         }
 
         const { term, session } = req.params;
-        const studentId = req.user.id; // The authenticated student's user ID
+        const studentId = req.user.id;
 
-        // 1. Fetch the student's basic details (class is crucial for class-based calculations)
+        // 1. Fetch student's details (class is crucial for class-based calculations)
         const { data: student, error: studentError } = await supabase
             .from('users')
             .select('id, student_id, full_name, class, gender, profile_picture')
@@ -1382,7 +1402,7 @@ app.get('/api/student/results/:term/:session', authenticateToken, async (req, re
         }
         const sessionId = sessionData.id;
 
-        // 3. Fetch academic results for the student, term, and session (only approved ones for reports)
+        // 3. Fetch academic results for the student for the term & session
         const { data: academicResults, error: resultsError } = await supabase
             .from('results')
             .select(`
@@ -1392,19 +1412,19 @@ app.get('/api/student/results/:term/:session', authenticateToken, async (req, re
             .eq('student_id', student.id)
             .eq('term', term)
             .eq('session_id', sessionId)
-            .eq('is_approved', true) // Only approved results for the report
-            .order('subjects(name)', { ascending: true }); // Order by subject name
+            .eq('is_approved', true)
+            .order('subjects(name)', { ascending: true });
 
         if (resultsError) {
             console.error('Supabase academic results lookup error:', resultsError);
             throw new Error('Failed to fetch academic results.');
         }
 
-        // Prepare enhanced academic results with previous term scores and subject-level class averages
+        // Prepare enhanced academic results
         const enhancedAcademicResults = await Promise.all(academicResults.map(async (result) => {
             let firstTermSubjectTotal = null;
             let secondTermSubjectTotal = null;
-            let cumulativeSubjectTotal = result.total_score; // Start with current term's total
+            let cumulativeSubjectTotal = result.total_score;
             let termsCountForSubjectAvg = 1;
 
             // Fetch 1st Term Subject Total
@@ -1452,7 +1472,7 @@ app.get('/api/student/results/:term/:session', authenticateToken, async (req, re
                 .eq('term', term)
                 .eq('session_id', sessionId)
                 .eq('is_approved', true)
-                .eq('students.class', student.class); // Filter by the student's class
+                .eq('students.class', student.class);
 
             if (classSubjectScoresError) {
                 console.error(`Error fetching class scores for subject ${result.subject_name}:`, classSubjectScoresError);
@@ -1466,13 +1486,12 @@ app.get('/api/student/results/:term/:session', authenticateToken, async (req, re
                 subject_name: result.subjects.name,
                 first_term_subject_total: firstTermSubjectTotal,
                 second_term_subject_total: secondTermSubjectTotal,
-                cumulative_subject_average: termsCountForSubjectAvg > 0 ? (cumulativeSubjectTotal / termsCountForSubjectAvg).toFixed(2) : 'N/A', // Corrected calculation
+                cumulative_subject_average: termsCountForSubjectAvg > 0 ? (cumulativeSubjectTotal / termsCountForSubjectAvg).toFixed(2) : 'N/A',
                 subject_class_average: subjectClassAverage,
             };
         }));
 
-
-        // 4. Fetch psychomotor skills for the student, term, and session
+        // 4. Fetch psychomotor skills
         const { data: psychomotorSkills, error: psychomotorError } = await supabase
             .from('psychomotor')
             .select('attendance, punctuality, neatness, honesty, responsibility, creativity, sports')
@@ -1481,41 +1500,37 @@ app.get('/api/student/results/:term/:session', authenticateToken, async (req, re
             .eq('session_id', sessionId)
             .single();
 
-        // If psychomotor skills are not found, it's not an error, just return empty object
-        if (psychomotorError && psychomotorError.code !== 'PGRST116') { // PGRST116 means 'No rows found'
+        if (psychomotorError && psychomotorError.code !== 'PGRST116') {
             console.warn('Warning: Psychomotor skills not found for student, term, session:', psychomotorError.message);
         }
 
-        // 5. Fetch Attendance Data for the student, term, and session
+        // 5. Fetch Attendance Data
         const { data: attendanceData, error: attendanceError } = await supabase
             .from('attendance')
             .select('days_opened, days_present')
             .eq('student_id', student.id)
             .eq('term', term)
-            .eq('session', session) // Use session name from URL for attendance table
+            .eq('session', session)
             .single();
         
-        if (attendanceError && attendanceError.code !== 'PGRST116') { // Ignore "no rows found"
+        if (attendanceError && attendanceError.code !== 'PGRST116') {
             console.warn('Warning: Attendance data not found for student, term, session:', attendanceError.message);
         }
 
-        // 6. Calculate Overall Performance for Current Term
-        const totalObtainableCurrentTerm = academicResults.length * 100; // Each subject max 100
+        // 6. Calculate Score Summary for Current Term
+        const totalObtainableCurrentTerm = academicResults.length * 100;
         const totalScoredCurrentTerm = academicResults.reduce((sum, r) => sum + r.total_score, 0);
         const percentageCurrentTerm = totalObtainableCurrentTerm > 0 ? (totalScoredCurrentTerm / totalObtainableCurrentTerm) * 100 : 0;
 
-        // 7. Calculate Class Average (for overall total score for the term) and Position in Class
-        let classAverageOverall = 'N/A'; // This is the class average of *overall* student scores for the term
+        // 7. Calculate Class Average (mean of all student percentages) and Position in Class
+        let classAverageOverall = 'N/A';
         let positionInClass = 'N/A';
 
         if (totalObtainableCurrentTerm > 0) {
             // Fetch all approved results for students in the same class for the current term and session
             const { data: allClassApprovedResults, error: allClassApprovedResultsError } = await supabase
                 .from('results')
-                .select(`
-                    total_score,
-                    student_id
-                `)
+                .select('total_score, student_id')
                 .eq('term', term)
                 .eq('session_id', sessionId)
                 .eq('is_approved', true);
@@ -1534,6 +1549,7 @@ app.get('/api/student/results/:term/:session', authenticateToken, async (req, re
                 if (studentsInClassError) {
                     console.error('Error fetching students in class for position:', studentsInClassError);
                 } else if (studentsInClass && studentsInClass.length > 0) {
+                    // Map of studentId -> { student_id, full_name, total_score_sum, subject_count }
                     const studentOverallScoresInClass = {};
                     studentsInClass.forEach(s => {
                         studentOverallScoresInClass[s.id] = {
@@ -1553,23 +1569,31 @@ app.get('/api/student/results/:term/:session', authenticateToken, async (req, re
 
                     const studentsWithValidScores = Object.values(studentOverallScoresInClass).filter(s => s.subject_count > 0);
 
+                    // Calculate class average as mean of student percentages
                     if (studentsWithValidScores.length > 0) {
-                        const totalClassSumOfScores = studentsWithValidScores.reduce((sum, s) => sum + s.total_score_sum, 0);
-                        classAverageOverall = (totalClassSumOfScores / studentsWithValidScores.length).toFixed(2);
+                        const studentPercentages = studentsWithValidScores.map(s => {
+                            const obtainable = s.subject_count * 100;
+                            return obtainable > 0 ? (s.total_score_sum / obtainable) * 100 : 0;
+                        });
+                        classAverageOverall = (studentPercentages.reduce((sum, p) => sum + p, 0) / studentPercentages.length).toFixed(2);
 
-                        // Calculate Position in Class
-                        studentsWithValidScores.sort((a, b) => b.total_score_sum - a.total_score_sum);
+                        // Calculate Position in Class (by percentage)
+                        const sortedStudents = studentsWithValidScores
+                            .map(s => ({
+                                ...s,
+                                percentage: s.subject_count > 0 ? (s.total_score_sum / (s.subject_count * 100)) * 100 : 0
+                            }))
+                            .sort((a, b) => b.percentage - a.percentage);
 
                         let currentRank = 1;
-                        let lastScore = -1;
-                        for (let i = 0; i < studentsWithValidScores.length; i++) {
-                            // Handle ties: students with same score get same rank
-                            if (studentsWithValidScores[i].total_score_sum !== lastScore) {
+                        let lastPercentage = -1;
+                        for (let i = 0; i < sortedStudents.length; i++) {
+                            if (sortedStudents[i].percentage !== lastPercentage) {
                                 currentRank = i + 1;
-                                lastScore = studentsWithValidScores[i].total_score_sum;
+                                lastPercentage = sortedStudents[i].percentage;
                             }
-                            if (studentsWithValidScores[i].student_id === student.student_id) {
-                                positionInClass = `${currentRank} of ${studentsWithValidScores.length}`;
+                            if (sortedStudents[i].student_id === student.student_id) {
+                                positionInClass = `${currentRank} of ${sortedStudents.length}`;
                                 break;
                             }
                         }
@@ -1578,13 +1602,11 @@ app.get('/api/student/results/:term/:session', authenticateToken, async (req, re
             }
         }
 
-
-        // 8. Cumulative Averages and Previous Term Total Scores (Overall SUM of approved results)
+        // 8. Cumulative Averages and Previous Term Total Scores
         let firstTermOverallTotalScore = null;
         let secondTermOverallTotalScore = null;
-        let cumulativeAveragePercentage = null; // Avg of term overall percentages
+        let cumulativeAveragePercentage = null;
 
-        // Fetch overall total scores for previous terms for cumulative average calculation
         const termsForCumulative = [];
         const currentTermPercentage = percentageCurrentTerm;
         if (currentTermPercentage > 0) {
@@ -1631,8 +1653,7 @@ app.get('/api/student/results/:term/:session', authenticateToken, async (req, re
             cumulativeAveragePercentage = (termsForCumulative.reduce((sum, p) => sum + p, 0) / termsForCumulative.length).toFixed(2);
         }
 
-
-        // 9. Determine Teacher Comment and Head Teacher Comment (using percentageCurrentTerm)
+        // 9. Determine Teacher Comment and Head Teacher Comment
         let teacherComment = '';
         if (percentageCurrentTerm >= 70) teacherComment = 'Brilliant student with good potentials, never relent';
         else if (percentageCurrentTerm >= 60) teacherComment = 'This is not yet your limit, you can do more';
@@ -1649,7 +1670,6 @@ app.get('/api/student/results/:term/:session', authenticateToken, async (req, re
         else if (percentageCurrentTerm >= 40) headTeacherComment = 'Fair performance. Significant improvement needed. - Mr Olusegun';
         else headTeacherComment = 'Unsatisfactory performance. Immediate remediation required. - Mr Olusegun';
 
-
         res.status(200).json({
             message: 'Student results fetched successfully.',
             student: {
@@ -1662,15 +1682,15 @@ app.get('/api/student/results/:term/:session', authenticateToken, async (req, re
             },
             term,
             session,
-            academicResults: enhancedAcademicResults, // Send the enhanced results
+            academicResults: enhancedAcademicResults,
             psychomotor: psychomotorSkills || {},
-            attendance: attendanceData || { days_opened: 'N/A', days_present: 'N/A' }, // Ensure it's never null
+            attendance: attendanceData || { days_opened: 'N/A', days_present: 'N/A' },
             overallPerformance: {
                 totalObtainable: totalObtainableCurrentTerm,
                 totalScored: totalScoredCurrentTerm,
                 percentage: parseFloat(percentageCurrentTerm.toFixed(2)),
-                classAverage: classAverageOverall, // Overall Class Average for the term
-                gradeOfPercentage: (() => { // Grade based on percentage
+                classAverage: classAverageOverall,
+                gradeOfPercentage: (() => {
                     if (percentageCurrentTerm >= 70) return 'A';
                     if (percentageCurrentTerm >= 60) return 'B';
                     if (percentageCurrentTerm >= 50) return 'C';
@@ -1678,14 +1698,14 @@ app.get('/api/student/results/:term/:session', authenticateToken, async (req, re
                     if (percentageCurrentTerm >= 30) return 'E';
                     return 'F';
                 })(),
-                positionInClass: positionInClass, // Student's position in class
+                positionInClass,
                 teacherComment,
                 headTeacherComment
             },
             cumulativeData: {
-                firstTermOverallTotalScore: firstTermOverallTotalScore,
-                secondTermOverallTotalScore: secondTermOverallTotalScore,
-                cumulativeAveragePercentage: cumulativeAveragePercentage, // Cumulative average of percentages
+                firstTermOverallTotalScore,
+                secondTermOverallTotalScore,
+                cumulativeAveragePercentage,
             }
         });
 
@@ -2028,17 +2048,14 @@ app.get('/api/student/export-result/:term/:session', authenticateToken, async (r
         const totalScoredCurrentTerm = academicResults.reduce((sum, r) => sum + r.total_score, 0);
         const percentageCurrentTerm = totalObtainableCurrentTerm > 0 ? (totalScoredCurrentTerm / totalObtainableCurrentTerm) * 100 : 0;
 
-        // Calculate Class Average (for overall total score for the term) and Position in Class
+        // Calculate Class Average (mean of all student percentages) and Position in Class
         let classAverageOverall = 'N/A';
         let positionInClass = 'N/A';
 
         if (totalObtainableCurrentTerm > 0) {
             const { data: allClassApprovedResults, error: allClassApprovedResultsError } = await supabase
                 .from('results')
-                .select(`
-                    total_score,
-                    student_id
-                `)
+                .select(`total_score, student_id`)
                 .eq('term', term)
                 .eq('session_id', sessionId)
                 .eq('is_approved', true);
@@ -2075,21 +2092,32 @@ app.get('/api/student/export-result/:term/:session', authenticateToken, async (r
 
                     const studentsWithValidScores = Object.values(studentOverallScoresInClass).filter(s => s.subject_count > 0);
                     
+                    // --- CORRECTED CLASS AVERAGE AND POSITION LOGIC ---
                     if (studentsWithValidScores.length > 0) {
-                        const totalClassSumOfScores = studentsWithValidScores.reduce((sum, s) => sum + s.total_score_sum, 0);
-                        classAverageOverall = (totalClassSumOfScores / studentsWithValidScores.length).toFixed(2);
+                        // Compute each student's percentage
+                        const studentPercentages = studentsWithValidScores.map(s => {
+                            const obtainable = s.subject_count * 100;
+                            return obtainable > 0 ? (s.total_score_sum / obtainable) * 100 : 0;
+                        });
+                        classAverageOverall = (studentPercentages.reduce((sum, p) => sum + p, 0) / studentPercentages.length).toFixed(2);
 
-                        studentsWithValidScores.sort((a, b) => b.total_score_sum - a.total_score_sum);
+                        // Position in class by percentage
+                        const sortedStudents = studentsWithValidScores
+                            .map(s => ({
+                                ...s,
+                                percentage: s.subject_count > 0 ? (s.total_score_sum / (s.subject_count * 100)) * 100 : 0
+                            }))
+                            .sort((a, b) => b.percentage - a.percentage);
 
                         let currentRank = 1;
-                        let lastScore = -1;
-                        for (let i = 0; i < studentsWithValidScores.length; i++) {
-                            if (studentsWithValidScores[i].total_score_sum !== lastScore) {
+                        let lastPercentage = -1;
+                        for (let i = 0; i < sortedStudents.length; i++) {
+                            if (sortedStudents[i].percentage !== lastPercentage) {
                                 currentRank = i + 1;
-                                lastScore = studentsWithValidScores[i].total_score_sum;
+                                lastPercentage = sortedStudents[i].percentage;
                             }
-                            if (studentsWithValidScores[i].student_id === student.student_id) {
-                                positionInClass = `${currentRank} of ${studentsWithValidScores.length}`;
+                            if (sortedStudents[i].student_id === student.student_id) {
+                                positionInClass = `${currentRank} of ${sortedStudents.length}`;
                                 break;
                             }
                         }
