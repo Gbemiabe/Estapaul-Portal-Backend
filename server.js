@@ -651,9 +651,10 @@ app.get('/api/teacher/psychomotor/:studentId/:term/:session', authenticateToken,
 
 // [12] GET STUDENT RESULTS FOR TEACHER 
 
+// [12] GET STUDENT RESULTS FOR TEACHER 
+
 app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateToken, async (req, res) => {
     try {
-        // 🔧 FIX: Decode URL parameters first
         const studentId = decodeURIComponent(req.params.studentId);
         const term = decodeURIComponent(req.params.term);
         const session = decodeURIComponent(req.params.session);
@@ -688,7 +689,18 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
             });
         }
 
-        // 🔧 FIX: Changed 'academic_results' to 'results' and simplified the query
+        // 🔧 FIX: Always fetch sessionId from session name!
+        const { data: sessionData, error: sessionError } = await supabase
+            .from('sessions')
+            .select('id')
+            .eq('name', session)
+            .single();
+        if (sessionError || !sessionData) {
+            return res.status(404).json({ message: 'Session not found.' });
+        }
+        const sessionId = sessionData.id;
+
+        // Use session_id for all queries to results table!
         const { data: academicResults, error: academicError } = await supabase
             .from('results')
             .select(`
@@ -696,23 +708,21 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
             `)
             .eq('student_id', student.id)
             .eq('term', term)
-            .eq('session', session);
+            .eq('session_id', sessionId);
 
         if (academicError) {
             throw academicError;
         }
 
-        // Get subject names separately if needed
+        // Get subject names
         const subjectIds = academicResults ? academicResults.map(ar => ar.subject_id) : [];
         let subjectNames = {};
-        
         if (subjectIds.length > 0) {
-            const { data: subjects, error: subjectsError } = await supabase
+            const { data: subjects } = await supabase
                 .from('subjects')
                 .select('id, name')
                 .in('id', subjectIds);
-            
-            if (!subjectsError && subjects) {
+            if (subjects) {
                 subjects.forEach(subject => {
                     subjectNames[subject.id] = subject.name;
                 });
@@ -723,15 +733,12 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
         let currentTermOverallTotal = 0;
         let currentTermOverallObtainable = 0;
 
-        // Process current term academic results
         if (academicResults && academicResults.length > 0) {
             formattedAcademicResults = academicResults.map(ar => {
                 const total = Number(ar.total_score);
                 const avg_pt = (Number(ar.pt1) + Number(ar.pt2) + Number(ar.pt3)) / 3;
-
                 currentTermOverallTotal += total;
                 currentTermOverallObtainable += 100;
-
                 return {
                     id: ar.id,
                     subject_id: ar.subject_id,
@@ -753,7 +760,6 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
         let secondTermOverallTotalScore = 0;
         let cumulativeOverallTotal = currentTermOverallTotal;
         let cumulativeOverallObtainable = currentTermOverallObtainable;
-
         let prevTerm1SubjectScores = {};
         let prevTerm2SubjectScores = {};
 
@@ -763,7 +769,7 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
                 .select('total_score, subject_id')
                 .eq('student_id', student.id)
                 .eq('term', '1st')
-                .eq('session', session);
+                .eq('session_id', sessionId);
 
             if (firstTermAcademicResults && firstTermAcademicResults.length > 0) {
                 firstTermOverallTotalScore = firstTermAcademicResults.reduce((sum, res) => {
@@ -781,7 +787,7 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
                 .select('total_score, subject_id')
                 .eq('student_id', student.id)
                 .eq('term', '2nd')
-                .eq('session', session);
+                .eq('session_id', sessionId);
 
             if (secondTermAcademicResults && secondTermAcademicResults.length > 0) {
                 secondTermOverallTotalScore = secondTermAcademicResults.reduce((sum, res) => {
@@ -796,20 +802,16 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
         // Enhance formattedAcademicResults with previous term scores
         formattedAcademicResults = formattedAcademicResults.map(ar => {
             let enhancedResult = { ...ar };
-
             if (term === '2nd' || term === '3rd') {
                 enhancedResult.first_term_total_score = prevTerm1SubjectScores[ar.subject_id] !== undefined ? prevTerm1SubjectScores[ar.subject_id] : null;
             } else {
                 enhancedResult.first_term_total_score = null;
             }
-
             if (term === '3rd') {
                 enhancedResult.second_term_total_score = prevTerm2SubjectScores[ar.subject_id] !== undefined ? prevTerm2SubjectScores[ar.subject_id] : null;
             } else {
                 enhancedResult.second_term_total_score = null;
             }
-
-            // Calculate subject-specific cumulative average
             let subjectScoresForCumAvg = [Number(ar.total_score)];
             if (enhancedResult.first_term_total_score !== null) {
                 subjectScoresForCumAvg.push(Number(enhancedResult.first_term_total_score));
@@ -820,7 +822,6 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
             enhancedResult.subject_cum_avg = subjectScoresForCumAvg.length > 0
                 ? (subjectScoresForCumAvg.reduce((a, b) => a + b, 0) / subjectScoresForCumAvg.length).toFixed(2)
                 : null;
-
             return enhancedResult;
         });
 
@@ -841,7 +842,7 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
                         .select('total_score')
                         .eq('student_id', classStudent.id)
                         .eq('term', term)
-                        .eq('session', session);
+                        .eq('session_id', sessionId);
 
                     if (studentResults && studentResults.length > 0) {
                         const totalScore = studentResults.reduce((sum, result) => sum + Number(result.total_score), 0);
@@ -883,22 +884,22 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
             position = 'N/A';
         }
 
-        // Fetch psychomotor results
+        // Fetch psychomotor results (use session_id)
         const { data: psychomotorData } = await supabase
-            .from('psychomotor_skills')
+            .from('psychomotor')
             .select('*')
             .eq('student_id', student.id)
             .eq('term', term)
-            .eq('session', session)
+            .eq('session_id', sessionId)
             .single();
 
-        // Fetch attendance
+        // Fetch attendance (use session_id)
         const { data: attendanceData } = await supabase
             .from('attendance')
             .select('days_opened, days_present')
             .eq('student_id', student.id)
             .eq('term', term)
-            .eq('session', session)
+            .eq('session_id', sessionId)
             .single();
 
         // Calculate overall cumulative average
@@ -934,7 +935,6 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
         });
     }
 });
-
 
 // GET CLASS RESULTS AND STUDENT POSITIONS FOR THE AUTHENTICATED TEACHER (WITH PERCENTAGE & CLASS AVERAGE)
 app.get('/api/teacher/class-overall-results', authenticateToken, authorizeTeacher, async (req, res) => {
@@ -1154,6 +1154,7 @@ app.get('/api/teacher/result/:studentId/:subjectId/:term/:session', authenticate
     try {
         const { studentId, subjectId, term, session } = req.params;
 
+        // Get student by student_id (string), return 404 if not found
         const { data: student, error: studentError } = await supabase
             .from('users')
             .select('id')
@@ -1161,6 +1162,7 @@ app.get('/api/teacher/result/:studentId/:subjectId/:term/:session', authenticate
             .single();
         if (studentError || !student) return res.status(404).json({ message: 'Student not found.' });
 
+        // Get session id from session name, return 404 if not found
         const { data: sessionData, error: sessionError } = await supabase
             .from('sessions')
             .select('id')
@@ -1171,16 +1173,17 @@ app.get('/api/teacher/result/:studentId/:subjectId/:term/:session', authenticate
         }
         const sessionId = sessionData.id;
 
+        // Always use session_id for querying results
         const { data, error } = await supabase
-            .from('results') // Assuming your table is named 'results'
-            .select('pt1, pt2, pt3, exam') // Select only the academic scores for prefill
+            .from('results')
+            .select('pt1, pt2, pt3, exam')
             .eq('student_id', student.id)
             .eq('subject_id', subjectId)
             .eq('term', term)
-            .eq('session_id', sessionId) // Use session_id if your results table stores session as a foreign key
+            .eq('session_id', sessionId)
             .single();
 
-        if (error && error.code === 'PGRST116') { // No rows found
+        if (error && error.code === 'PGRST116') {
             return res.status(404).json({ message: 'No existing academic result found for this student, subject, term, and session.' });
         }
         if (error) throw error;
@@ -1197,6 +1200,7 @@ app.get('/api/teacher/psychomotor/:studentId/:term/:session', authenticateToken,
     try {
         const { studentId, term, session } = req.params;
 
+        // Get student by student_id (string), return 404 if not found
         const { data: student, error: studentError } = await supabase
             .from('users')
             .select('id')
@@ -1204,6 +1208,7 @@ app.get('/api/teacher/psychomotor/:studentId/:term/:session', authenticateToken,
             .single();
         if (studentError || !student) return res.status(404).json({ message: 'Student not found.' });
 
+        // Get session id from session name, return 404 if not found
         const { data: sessionData, error: sessionError } = await supabase
             .from('sessions')
             .select('id')
@@ -1214,26 +1219,24 @@ app.get('/api/teacher/psychomotor/:studentId/:term/:session', authenticateToken,
         }
         const sessionId = sessionData.id;
 
-        // Fetch psychomotor data
+        // Use session_id for both queries
         const { data: psychomotorData, error: psychomotorError } = await supabase
-            .from('psychomotor') // Assuming your table is named 'psychomotor'
+            .from('psychomotor')
             .select('attendance, punctuality, neatness, honesty, responsibility, creativity, sports')
             .eq('student_id', student.id)
             .eq('term', term)
-            .eq('session_id', sessionId) // Use session_id
+            .eq('session_id', sessionId)
             .single();
 
-        // Fetch attendance data separately
         const { data: attendanceData, error: attendanceError } = await supabase
-            .from('attendance') // Assuming your table is named 'attendance'
+            .from('attendance')
             .select('days_opened, days_present')
             .eq('student_id', student.id)
             .eq('term', term)
-            .eq('session_id', sessionId) // Use session_id
+            .eq('session_id', sessionId)
             .single();
 
         if ((psychomotorError && psychomotorError.code !== 'PGRST116') || (attendanceError && attendanceError.code !== 'PGRST116')) {
-            // Only throw if it's an actual database error, not just "no rows found"
             if (psychomotorError && psychomotorError.code !== 'PGRST116') throw psychomotorError;
             if (attendanceError && attendanceError.code !== 'PGRST116') throw attendanceError;
         }
@@ -1242,10 +1245,10 @@ app.get('/api/teacher/psychomotor/:studentId/:term/:session', authenticateToken,
             return res.status(404).json({ message: 'No existing psychomotor or attendance result found.' });
         }
 
-        // Combine psychomotor and attendance data
+        // Merge both results for pre-fill
         const combinedData = {
-            ...(psychomotorData || {}), // Ensure psychomotorData is an object even if null
-            ...(attendanceData || {})    // Ensure attendanceData is an object even if null
+            ...(psychomotorData || {}),
+            ...(attendanceData || {})
         };
 
         res.status(200).json(combinedData);
