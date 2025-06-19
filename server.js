@@ -1022,6 +1022,61 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
     }
 });
 
+// [15] GET ALL ACADEMIC RESULTS FOR A CLASS BY SUBJECT, TERM, AND SESSION (for bulk prefill)
+app.get('/api/teacher/results/class/:classId/:subjectId/:term/:session', authenticateToken, async (req, res) => {
+    try {
+        const { classId, subjectId, term, session } = req.params;
+
+        // 1. Verify teacher's class matches the requested classId
+        const { data: teacher, error: teacherError } = await supabase
+            .from('users')
+            .select('class')
+            .eq('id', req.user.id)
+            .single();
+        if (teacherError || !teacher) {
+            return res.status(404).json({ message: 'Teacher not found' });
+        }
+        if (teacher.class !== classId) {
+            return res.status(403).json({ message: 'Unauthorized - Can only view results for your class' });
+        }
+
+        // 2. Get session ID from session name
+        const { data: sessionData, error: sessionError } = await supabase
+            .from('sessions')
+            .select('id')
+            .eq('name', session)
+            .single();
+        if (sessionError || !sessionData) {
+            return res.status(404).json({ message: 'Session not found.' });
+        }
+        const sessionId = sessionData.id;
+
+        // 3. Fetch all academic results for the specified class, subject, term, and session
+        const { data: results, error: resultsError } = await supabase
+            .from('results')
+            .select(`
+                student_id,
+                pt1,
+                pt2,
+                pt3,
+                exam
+            `)
+            .eq('subject_id', subjectId)
+            .eq('term', term)
+            .eq('session_id', sessionId)
+            .in('student_id', supabase.from('users').select('id').eq('class', classId)); // Filter by students in the specified class
+
+        if (resultsError) throw resultsError;
+
+        // Return the results. If no results, an empty array will be returned.
+        res.json(results);
+
+    } catch (error) {
+        console.error('Error fetching bulk academic results for class:', error);
+        res.status(500).json({ message: 'Failed to fetch bulk academic results', error: error.message });
+    }
+});
+
 // GET CLASS RESULTS AND STUDENT POSITIONS FOR THE AUTHENTICATED TEACHER (WITH PERCENTAGE & CLASS AVERAGE)
 app.get('/api/teacher/class-overall-results', authenticateToken, authorizeTeacher, async (req, res) => {
     try {
