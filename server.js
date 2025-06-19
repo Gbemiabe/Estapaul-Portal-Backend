@@ -1,3 +1,5 @@
+
+
 // server.js - Complete Version
 const express = require('express');
 const dotenv = require('dotenv');
@@ -7,13 +9,14 @@ const bcrypt = require('bcryptjs');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const cors = require('cors');
 
 // PDF Generation Libraries
 const { PDFDocument, rgb, StandardFonts } = require('pdf-lib');
 
 // Explicitly get the default export from node-fetch, which is the fetch function itself.
 const nodeFetch = require('node-fetch');
-const _fetchApi = nodeFetch.default || nodeFetch; 
+const _fetchApi = nodeFetch.default || nodeFetch;
 
 const Headers = nodeFetch.Headers || (nodeFetch.default && nodeFetch.default.Headers);
 const Request = nodeFetch.Request || (nodeFetch.default && nodeFetch.default.Request);
@@ -22,7 +25,7 @@ const Response = nodeFetch.Response || (nodeFetch.default && nodeFetch.default.R
 // Config
 dotenv.config();
 const app = express();
-const PORT = process.env.PORT || 3001; 
+const PORT = process.env.PORT || 3001; // Changed to 3001, please confirm if this is your intended port for backend
 
 // Initialize Supabase client
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY, {
@@ -38,9 +41,9 @@ const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret';
 
 // Define the precise order of classes for promotion and general use
 const CLASS_ORDER = [
-  'Creche', 'KG 1', 'KG 2', 'Nursery 1', 'Nursery 2', 'Primary 1',
-  'Primary 2', 'Primary 3', 'Primary 4', 'Primary 5', 'JSS 1',
-  'JSS 2', 'JSS 3', 'SS1', 'SS2', 'SS3' // Corrected class names (removed space)
+    'Creche', 'KG 1', 'KG 2', 'Nursery 1', 'Nursery 2', 'Primary 1',
+    'Primary 2', 'Primary 3', 'Primary 4', 'Primary 5', 'JSS 1',
+    'JSS 2', 'JSS 3', 'SS1', 'SS2', 'SS3'
 ];
 
 const ALL_CLASSES = [...CLASS_ORDER];
@@ -54,27 +57,18 @@ PROMOTION_MAP[CLASS_ORDER[CLASS_ORDER.length - 1]] = 'GRADUATED';
 
 console.log("PROMOTION_MAP:", PROMOTION_MAP);
 
-// Middleware
+//cors
+app.use(cors({
+    origin: ['http://localhost:3000', 'http://localhost:3001', 'https://estapaulschool.onrender.com'], 
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: true
+}));
+
+// Middleware 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
-
-// CORS 
-app.use((req, res, next) => {
-    const allowedOrigins = ['http://localhost:3000', 'http://localhost:3001']; 
-    const origin = req.headers.origin;
-    
-    if (allowedOrigins.includes(origin)) {
-        res.header('Access-Control-Allow-Origin', origin);
-    }
-    
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-    res.header('Access-Control-Allow-Credentials', 'true');
-    
-    if (req.method === 'OPTIONS') return res.sendStatus(200);
-    next();
-});
 
 // File Upload Setup
 const storage = multer.diskStorage({
@@ -336,6 +330,7 @@ app.get('/api/school-info', async (req, res) => {
             email: 'info@estapaulschools.com',
             logo_url: logoUrl || 'https://placehold.co/150x50/cccccc/000000?text=Logo+Missing', // Fallback
             description: 'Quality education from Creche to Senior Secondary',
+            propietor: 'Mr Olabode',
             principal_name: 'Mr Olusegun',
             social_media: {
                 facebook: 'https://facebook.com/estapaulschools',
