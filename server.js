@@ -449,12 +449,12 @@ app.get('/api/teacher/subjects', authenticateToken, async (req, res) => {
     }
 });
 
-// [11] TEACHER BULK UPLOAD ACADEMIC RESULTS (PT1, PT2, PT3, Exam - Incremental)
+// [11] TEACHER BULK UPLOAD ACADEMIC RESULTS (Multiple Subjects per Student)
 app.post('/api/teacher/results/academic-bulk', authenticateToken, async (req, res) => {
     try {
         if (req.user.role !== 'teacher') return res.status(403).json({ message: 'Unauthorized - Teachers only' });
 
-        const { academicResults } = req.body; // Expects an array of result objects
+        const { academicResults } = req.body; // Expects an array of { student_id, term, session_id, results: [{ subject_id, pt1, pt2, pt3, exam }] }
 
         if (!Array.isArray(academicResults) || academicResults.length === 0) {
             return res.status(400).json({ message: 'Missing or invalid academicResults array.' });
@@ -463,21 +463,11 @@ app.post('/api/teacher/results/academic-bulk', authenticateToken, async (req, re
         const uploadedResults = [];
         const errors = [];
 
-        for (const resultData of academicResults) {
-            const {
-                student_id,
-                term,
-                session_id, 
-                subject_id,
-                pt1,
-                pt2,
-                pt3,
-                exam,
-            } = resultData;
+        for (const entry of academicResults) {
+            const { student_id, term, session_id, results } = entry;
 
-            // Basic validation for required fields for an academic result entry
-            if (!student_id || !term || !session_id || !subject_id) {
-                errors.push({ student_id, message: 'Missing core academic fields for a result entry.' });
+            if (!student_id || !term || !session_id || !Array.isArray(results) || results.length === 0) {
+                errors.push({ student_id, message: 'Missing core fields or results array for a student entry.' });
                 continue;
             }
 
@@ -506,83 +496,88 @@ app.post('/api/teacher/results/academic-bulk', authenticateToken, async (req, re
                 continue;
             }
 
-            // Fetch subject for validation
-            const { data: subject, error: subjectError } = await supabase
-                .from('subjects')
-                .select('id, name')
-                .eq('id', subject_id)
-                .eq('class', teacher.class)
-                .single();
-            if (subjectError || !subject) {
-                errors.push({ student_id, message: 'Invalid subject or subject not found for this class.' });
-                continue;
+            for (const resultData of results) {
+                const { subject_id, pt1, pt2, pt3, exam } = resultData;
+
+                if (!subject_id) {
+                    errors.push({ student_id, subject_id, message: 'Missing subject_id in results.' });
+                    continue;
+                }
+
+                // Fetch subject for validation
+                const { data: subject, error: subjectError } = await supabase
+                    .from('subjects')
+                    .select('id, name')
+                    .eq('id', subject_id)
+                    .eq('class', teacher.class)
+                    .single();
+                if (subjectError || !subject) {
+                    errors.push({ student_id, subject_id, message: 'Invalid subject or subject not found for this class.' });
+                    continue;
+                }
+
+                // Calculations for academic scores
+                const parsedPt1 = pt1 != null ? parseInt(pt1) : null;
+                const parsedPt2 = pt2 != null ? parseInt(pt2) : null;
+                const parsedPt3 = pt3 != null ? parseInt(pt3) : null;
+                const parsedExam = exam != null ? parseInt(exam) : null;
+
+                let sumPT = 0, countPT = 0;
+                if (parsedPt1 != null) { sumPT += parsedPt1; countPT++; }
+                if (parsedPt2 != null) { sumPT += parsedPt2; countPT++; }
+                if (parsedPt3 != null) { sumPT += parsedPt3; countPT++; }
+                const avgPT = countPT > 0 ? Math.round(sumPT / countPT) : null;
+
+                let totalScore = null;
+                if (avgPT != null && parsedExam != null) {
+                    totalScore = avgPT + parsedExam;
+                }
+
+                let grade = null, remark = null;
+                if (totalScore != null) {
+                    if (totalScore >= 70) { grade = 'A'; remark = 'Excellent'; }
+                    else if (totalScore >= 60) { grade = 'B'; remark = 'Very Good'; }
+                    else if (totalScore >= 50) { grade = 'C'; remark = 'Credit'; }
+                    else if (totalScore >= 40) { grade = 'D'; remark = 'Fair'; }
+                    else if (totalScore >= 30) { grade = 'E'; remark = 'Poor'; }
+                    else { grade = 'F'; remark = 'Very Poor'; }
+                }
+
+                // Upsert into results table
+                const { data: result, error: resultError } = await supabase
+                    .from('results')
+                    .upsert([{
+                        student_id: student.id,
+                        subject_id: subject_id,
+                        term,
+                        session_id: session_id,
+                        pt1: parsedPt1,
+                        pt2: parsedPt2,
+                        pt3: parsedPt3,
+                        avg_pt: avgPT,
+                        exam: parsedExam,
+                        total_score: totalScore,
+                        grade,
+                        remark,
+                        teacher_id: req.user.id,
+                        is_approved: false
+                    }], {
+                        onConflict: 'student_id,subject_id,term,session_id'
+                    })
+                    .select()
+                    .single();
+
+                if (resultError) {
+                    console.error(`Supabase results upsert error for student ${student_id}, subject ${subject_id}:`, resultError);
+                    errors.push({ student_id, subject_id, message: resultError.message || 'Failed to upload result.' });
+                    continue;
+                }
+                uploadedResults.push({ ...result, subject_name: subject.name, student_id });
             }
-
-            // Calculations for academic scores (only if relevant scores are provided)
-            const parsedPt1 = pt1 != null ? parseInt(pt1) : null;
-            const parsedPt2 = pt2 != null ? parseInt(pt2) : null;
-            const parsedPt3 = pt3 != null ? parseInt(pt3) : null;
-            const parsedExam = exam != null ? parseInt(exam) : null;
-
-            // Calculate avgPT (only if at least one PT score is provided)
-            let sumPT = 0;
-            let countPT = 0;
-            if (parsedPt1 != null) { sumPT += parsedPt1; countPT++; }
-            if (parsedPt2 != null) { sumPT += parsedPt2; countPT++; }
-            if (parsedPt3 != null) { sumPT += parsedPt3; countPT++; }
-            const avgPT = countPT > 0 ? Math.round(sumPT / countPT) : null;
-
-            // Calculate totalScore (only if avgPT and exam are available)
-            let totalScore = null;
-            if (avgPT != null && parsedExam != null) {
-                totalScore = avgPT + parsedExam;
-            }
-
-            // Determine grade and remark (only if totalScore is available)
-            let grade = null, remark = null;
-            if (totalScore != null) {
-                if (totalScore >= 70) { grade = 'A'; remark = 'Excellent'; }
-                else if (totalScore >= 60) { grade = 'B'; remark = 'Very Good'; }
-                else if (totalScore >= 50) { grade = 'C'; remark = 'Credit'; }
-                else if (totalScore >= 40) { grade = 'D'; remark = 'Fair'; }
-                else if (totalScore >= 30) { grade = 'E'; remark = 'Poor'; }
-                else { grade = 'F'; remark = 'Very Poor'; }
-            }
-
-            // Upsert into results table
-            const { data: result, error: resultError } = await supabase
-                .from('results')
-                .upsert([{
-                    student_id: student.id,
-                    subject_id: subject_id,
-                    term,
-                    session_id: session_id, 
-                    pt1: parsedPt1,
-                    pt2: parsedPt2,
-                    pt3: parsedPt3,
-                    avg_pt: avgPT,
-                    exam: parsedExam,
-                    total_score: totalScore,
-                    grade,
-                    remark,
-                    teacher_id: req.user.id,
-                    is_approved: false
-                }], {
-                    onConflict: 'student_id,subject_id,term,session_id' 
-                })
-                .select()
-                .single();
-
-            if (resultError) {
-                console.error(`Supabase results upsert error for student ${student_id}:`, resultError);
-                errors.push({ student_id, message: resultError.message || 'Failed to upload result.' });
-                continue;
-            }
-            uploadedResults.push({ ...result, subject_name: subject.name });
         }
 
         if (errors.length > 0) {
-            return res.status(207).json({ // 207 Multi-Status.....adura
+            return res.status(207).json({
                 message: 'Some results uploaded successfully, but some failed.',
                 uploaded: uploadedResults,
                 errors: errors
@@ -1008,61 +1003,6 @@ app.get('/api/teacher/student-results/:studentId/:term/:session', authenticateTo
             message: 'Server error',
             error: error.message
         });
-    }
-});
-
-// [15] GET ALL ACADEMIC RESULTS FOR A CLASS BY SUBJECT, TERM, AND SESSION (for bulk prefill)
-app.get('/api/teacher/results/class/:classId/:subjectId/:term/:session', authenticateToken, async (req, res) => {
-    try {
-        const { classId, subjectId, term, session } = req.params;
-
-        // 1. Verify teacher's class matches the requested classId
-        const { data: teacher, error: teacherError } = await supabase
-            .from('users')
-            .select('class')
-            .eq('id', req.user.id)
-            .single();
-        if (teacherError || !teacher) {
-            return res.status(404).json({ message: 'Teacher not found' });
-        }
-        if (teacher.class !== classId) {
-            return res.status(403).json({ message: 'Unauthorized - Can only view results for your class' });
-        }
-
-        // 2. Get session ID from session name
-        const { data: sessionData, error: sessionError } = await supabase
-            .from('sessions')
-            .select('id')
-            .eq('name', session)
-            .single();
-        if (sessionError || !sessionData) {
-            return res.status(404).json({ message: 'Session not found.' });
-        }
-        const sessionId = sessionData.id;
-
-        // 3. Fetch all academic results for the specified class, subject, term, and session
-        const { data: results, error: resultsError } = await supabase
-            .from('results')
-            .select(`
-                student_id,
-                pt1,
-                pt2,
-                pt3,
-                exam
-            `)
-            .eq('subject_id', subjectId)
-            .eq('term', term)
-            .eq('session_id', sessionId)
-            .in('student_id', supabase.from('users').select('id').eq('class', classId)); // Filter by students in the specified class
-
-        if (resultsError) throw resultsError;
-
-        // Return the results. If no results, an empty array will be returned.
-        res.json(results);
-
-    } catch (error) {
-        console.error('Error fetching bulk academic results for class:', error);
-        res.status(500).json({ message: 'Failed to fetch bulk academic results', error: error.message });
     }
 });
 
