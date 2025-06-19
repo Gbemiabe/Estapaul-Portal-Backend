@@ -328,7 +328,6 @@ app.get('/api/school-info', async (req, res) => {
             email: 'info@estapaulschools.com',
             logo_url: logoUrl || 'https://placehold.co/150x50/cccccc/000000?text=Logo+Missing', // Fallback
             description: 'Quality education from Creche to Senior Secondary',
-            propietor: 'Mr Olabode',
             principal_name: 'Mr Olusegun',
             proprietor_name: 'Mr Adetunkasi Adewale',
             social_media: {
@@ -449,161 +448,20 @@ app.get('/api/teacher/subjects', authenticateToken, async (req, res) => {
     }
 });
 
-// [11] TEACHER BULK UPLOAD ACADEMIC RESULTS (Multiple Subjects per Student)
-app.post('/api/teacher/results/academic-bulk', authenticateToken, async (req, res) => {
-    try {
-        if (req.user.role !== 'teacher') return res.status(403).json({ message: 'Unauthorized - Teachers only' });
-
-        const { academicResults } = req.body; // Expects an array of { student_id, term, session_id, results: [{ subject_id, pt1, pt2, pt3, exam }] }
-
-        if (!Array.isArray(academicResults) || academicResults.length === 0) {
-            return res.status(400).json({ message: 'Missing or invalid academicResults array.' });
-        }
-
-        const uploadedResults = [];
-        const errors = [];
-
-        for (const entry of academicResults) {
-            const { student_id, term, session_id, results } = entry;
-
-            if (!student_id || !term || !session_id || !Array.isArray(results) || results.length === 0) {
-                errors.push({ student_id, message: 'Missing core fields or results array for a student entry.' });
-                continue;
-            }
-
-            // Fetch student and teacher class for authorization
-            const { data: student, error: studentError } = await supabase
-                .from('users')
-                .select('id, class')
-                .eq('student_id', student_id)
-                .single();
-            if (studentError || !student) {
-                errors.push({ student_id, message: 'Student not found.' });
-                continue;
-            }
-
-            const { data: teacher, error: teacherError } = await supabase
-                .from('users')
-                .select('class')
-                .eq('id', req.user.id)
-                .single();
-            if (teacherError || !teacher) {
-                errors.push({ student_id, message: 'Teacher not found.' });
-                continue;
-            }
-            if (teacher.class !== student.class) {
-                errors.push({ student_id, message: 'Unauthorized - Can only upload results for your class.' });
-                continue;
-            }
-
-            for (const resultData of results) {
-                const { subject_id, pt1, pt2, pt3, exam } = resultData;
-
-                if (!subject_id) {
-                    errors.push({ student_id, subject_id, message: 'Missing subject_id in results.' });
-                    continue;
-                }
-
-                // Fetch subject for validation
-                const { data: subject, error: subjectError } = await supabase
-                    .from('subjects')
-                    .select('id, name')
-                    .eq('id', subject_id)
-                    .eq('class', teacher.class)
-                    .single();
-                if (subjectError || !subject) {
-                    errors.push({ student_id, subject_id, message: 'Invalid subject or subject not found for this class.' });
-                    continue;
-                }
-
-                // Calculations for academic scores
-                const parsedPt1 = pt1 != null ? parseInt(pt1) : null;
-                const parsedPt2 = pt2 != null ? parseInt(pt2) : null;
-                const parsedPt3 = pt3 != null ? parseInt(pt3) : null;
-                const parsedExam = exam != null ? parseInt(exam) : null;
-
-                let sumPT = 0, countPT = 0;
-                if (parsedPt1 != null) { sumPT += parsedPt1; countPT++; }
-                if (parsedPt2 != null) { sumPT += parsedPt2; countPT++; }
-                if (parsedPt3 != null) { sumPT += parsedPt3; countPT++; }
-                const avgPT = countPT > 0 ? Math.round(sumPT / countPT) : null;
-
-                let totalScore = null;
-                if (avgPT != null && parsedExam != null) {
-                    totalScore = avgPT + parsedExam;
-                }
-
-                let grade = null, remark = null;
-                if (totalScore != null) {
-                    if (totalScore >= 70) { grade = 'A'; remark = 'Excellent'; }
-                    else if (totalScore >= 60) { grade = 'B'; remark = 'Very Good'; }
-                    else if (totalScore >= 50) { grade = 'C'; remark = 'Credit'; }
-                    else if (totalScore >= 40) { grade = 'D'; remark = 'Fair'; }
-                    else if (totalScore >= 30) { grade = 'E'; remark = 'Poor'; }
-                    else { grade = 'F'; remark = 'Very Poor'; }
-                }
-
-                // Upsert into results table
-                const { data: result, error: resultError } = await supabase
-                    .from('results')
-                    .upsert([{
-                        student_id: student.id,
-                        subject_id: subject_id,
-                        term,
-                        session_id: session_id,
-                        pt1: parsedPt1,
-                        pt2: parsedPt2,
-                        pt3: parsedPt3,
-                        avg_pt: avgPT,
-                        exam: parsedExam,
-                        total_score: totalScore,
-                        grade,
-                        remark,
-                        teacher_id: req.user.id,
-                        is_approved: false
-                    }], {
-                        onConflict: 'student_id,subject_id,term,session_id'
-                    })
-                    .select()
-                    .single();
-
-                if (resultError) {
-                    console.error(`Supabase results upsert error for student ${student_id}, subject ${subject_id}:`, resultError);
-                    errors.push({ student_id, subject_id, message: resultError.message || 'Failed to upload result.' });
-                    continue;
-                }
-                uploadedResults.push({ ...result, subject_name: subject.name, student_id });
-            }
-        }
-
-        if (errors.length > 0) {
-            return res.status(207).json({
-                message: 'Some results uploaded successfully, but some failed.',
-                uploaded: uploadedResults,
-                errors: errors
-            });
-        }
-
-        res.status(200).json({
-            message: 'All academic results uploaded successfully.',
-            uploaded: uploadedResults
-        });
-
-    } catch (error) {
-        console.error('Bulk academic results upload server error:', error);
-        res.status(500).json({ message: 'Failed to upload academic results', error: error.message });
-    }
-});
-
-// [12] TEACHER UPDATE SINGLE STUDENT PSYCHOMOTOR SKILLS
-app.post('/api/teacher/psychomotor/update-student', authenticateToken, async (req, res) => {
+// [11] UPLOAD STUDENT RESULTS - FIXED VERSION
+app.post('/api/teacher/results', authenticateToken, async (req, res) => {
     try {
         if (req.user.role !== 'teacher') return res.status(403).json({ message: 'Unauthorized - Teachers only' });
 
         const {
             student_id,
             term,
-            session_id, // Use session_id
+            session,
+            subject_id, 
+            pt1,
+            pt2,
+            pt3,
+            exam,
             attendance,
             punctuality,
             neatness,
@@ -613,12 +471,13 @@ app.post('/api/teacher/psychomotor/update-student', authenticateToken, async (re
             sports
         } = req.body;
 
-        // Basic validation for psychomotor fields (allow nulls for incremental, but check core identifiers)
-        if (!student_id || !term || !session_id) {
-            return res.status(400).json({ message: 'Missing core psychomotor fields: student_id, term, session_id.' });
+        if (!student_id || !term || !session || !subject_id || pt1 == null || pt2 == null || 
+            pt3 == null || exam == null || attendance == null || punctuality == null || 
+            neatness == null || honesty == null || responsibility == null || 
+            creativity == null || sports == null) {
+            return res.status(400).json({ message: 'All fields required' });
         }
 
-        // Fetch student and teacher class for authorization
         const { data: student, error: studentError } = await supabase
             .from('users')
             .select('id, class')
@@ -633,40 +492,99 @@ app.post('/api/teacher/psychomotor/update-student', authenticateToken, async (re
             .single();
         if (teacherError || !teacher) throw new Error('Teacher not found');
         if (teacher.class !== student.class) {
-            return res.status(403).json({ message: 'Unauthorized - You can only update psychomotor skills for your class' });
+            return res.status(403).json({ message: 'Unauthorized - You can only upload results for your class' });
         }
-        
-        // Upsert into psychomotor table
-        const { data, error: skillsError } = await supabase
-            .from('psychomotor') // Your psychomotor table
+
+        const { data: subject, error: subjectError } = await supabase
+            .from('subjects')
+            .select('id, name')
+            .eq('id', subject_id)
+            .eq('class', teacher.class)
+            .single();
+        if (subjectError || !subject) {
+            return res.status(400).json({ message: 'Invalid subject or subject not found for this class' });
+        }
+
+        const avgPT = Math.round((parseInt(pt1) + parseInt(pt2) + parseInt(pt3)) / 3);
+        const totalScore = avgPT + parseInt(exam);
+        let grade, remark;
+        if (totalScore >= 70) { grade = 'A'; remark = 'Excellent'; }
+        else if (totalScore >= 60) { grade = 'B'; remark = 'Very Good'; }
+        else if (totalScore >= 50) { grade = 'C'; remark = 'Credit'; }
+        else if (totalScore >= 40) { grade = 'D'; remark = 'Fair'; }
+        else if (totalScore >= 30) { grade = 'E'; remark = 'Poor'; }
+        else { grade = 'F'; remark = 'Very Poor'; }
+
+        let sessionId;
+        const { data: existingSession } = await supabase
+            .from('sessions')
+            .select('id')
+            .eq('name', session)
+            .single();
+        if (existingSession) {
+            sessionId = existingSession.id;
+        } else {
+            const { data: newSession } = await supabase
+                .from('sessions')
+                .insert([{ name: session }])
+                .select('id')
+                .single();
+            sessionId = newSession.id;
+        }
+
+        const { data: result, error: resultError } = await supabase
+            .from('results')
             .upsert([{
                 student_id: student.id,
+                subject_id: subject_id,
                 term,
-                session_id, // Use session_id
-                attendance: attendance != null ? attendance : null, // Allow nulls for incremental updates
-                punctuality: punctuality != null ? punctuality : null,
-                neatness: neatness != null ? neatness : null,
-                honesty: honesty != null ? honesty : null,
-                responsibility: responsibility != null ? responsibility : null,
-                creativity: creativity != null ? creativity : null,
-                sports: sports != null ? sports : null,
-                created_by: req.user.id
+                session_id: sessionId,
+                pt1,
+                pt2,
+                pt3,
+                avg_pt: avgPT,
+                exam,
+                total_score: totalScore,
+                grade,
+                remark,
+                teacher_id: req.user.id,
+                is_approved: false
             }], {
-                onConflict: 'student_id,term,session_id' 
+                onConflict: 'student_id,subject_id,term,session_id'
             })
             .select()
             .single();
+        if (resultError) throw resultError;
 
-        if (skillsError) {
-            console.error('Supabase psychomotor upsert error:', skillsError);
-            throw skillsError;
-        }
+        const { error: skillsError } = await supabase
+            .from('psychomotor')
+            .upsert([{
+                student_id: student.id,
+                term,
+                session_id: sessionId,
+                attendance,
+                punctuality,
+                neatness,
+                honesty,
+                responsibility,
+                creativity,
+                sports,
+                created_by: req.user.id
+            }], {
+                onConflict: 'student_id,term,session_id'
+            });
+        if (skillsError) throw skillsError;
 
-        res.status(200).json({ message: 'Psychomotor skills updated successfully', data });
+        res.status(201).json({
+            message: 'Results uploaded successfully',
+            result: {
+                ...result,
+                subject_name: subject.name
+            }
+        });
 
     } catch (error) {
-        console.error('Psychomotor update server error:', error);
-        res.status(500).json({ message: 'Failed to update psychomotor skills', error: error.message });
+        res.status(500).json({ message: 'Server error', error: error.message });
     }
 });
 
